@@ -98,7 +98,13 @@
 
 .PARAMETER OutputFolder
     Where the CSV/log files are written. Created if it doesn't exist. Defaults to
-    a timestamped folder in the current directory.
+    a timestamped folder in the current directory. Every output file name also
+    includes the same run timestamp (e.g. FolderPermissions_20260910_211500.csv),
+    so re-running into a fixed/shared -OutputFolder across multiple runs never
+    overwrites a previous run's files -- each run's complete set of files is
+    self-identifying by timestamp even if they get moved out of their original
+    folder later. See -Force if you ever need to override the resulting
+    don't-overwrite protection.
 
 .PARAMETER NoAdLookup
     Skip AD identity-type resolution and group expansion entirely (fastest option,
@@ -106,6 +112,13 @@
     Identities are still shown by their resolved NTAccount name/SID. ADIdentityDetails.csv
     is still produced but every row will just show Name/Sid/Type with a note that AD
     lookup was disabled, since none of the HR/account-state fields can be populated.
+
+.PARAMETER Force
+    Every output file name includes a run timestamp by default (see below), so
+    re-running into the same -OutputFolder normally never collides with a previous
+    run's files. -Force is only needed in the rare case a file with that exact name
+    already exists anyway (e.g. two runs started within the same second); without it,
+    the script errors rather than silently overwriting.
 
 .EXAMPLE
     .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -ExpandGroups
@@ -118,6 +131,10 @@
 
 .NOTES
     Version: 0.1.0
+
+    Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
+    path differs internally between the two -- .NET Framework vs .NET Core expose
+    that API differently -- but this is handled automatically; no action needed).
 
     Minimum PowerShell 5.1. Run interactively as (or "runas" / scheduled task under) an
     account with at least Read + Read-Permissions NTFS access to every object being
@@ -160,7 +177,9 @@ param(
 
     [string]$OutputFolder = ".\NTFSAudit_$(Get-Date -Format yyyyMMdd_HHmmss)",
 
-    [switch]$NoAdLookup
+    [switch]$NoAdLookup,
+
+    [switch]$Force
 )
 
 #region Setup ---------------------------------------------------------------
@@ -169,6 +188,19 @@ $ScriptVersion = '0.1.0'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# [System.IO.Directory]::GetAccessControl / [System.IO.File]::GetAccessControl exist as
+# static methods only in the full .NET Framework (Windows PowerShell 5.1, "Desktop"
+# edition). PowerShell 7+ ("Core" edition) runs on .NET Core/.NET 5+, where the same
+# functionality moved to extension methods on DirectoryInfo/FileInfo in
+# System.IO.FileSystemAclExtensions -- calling the old static methods there throws
+# "does not contain a method named 'GetAccessControl'". Get-ObjectAcl below branches on
+# this so the script works correctly under both 5.1 and 7+.
+$script:IsPSCore = $PSVersionTable.PSEdition -eq 'Core'
+if ($script:IsPSCore) {
+    try { Add-Type -AssemblyName System.IO.FileSystem.AccessControl -ErrorAction Stop }
+    catch { Write-Warning "Could not load System.IO.FileSystem.AccessControl ($($_.Exception.Message)). ACL reads will likely fail on this PowerShell 7+ session." }
+}
 
 if ($NoRecursion) {
     if ($PSBoundParameters.ContainsKey('MaxDepth') -and $MaxDepth -ne 0) {
@@ -183,15 +215,31 @@ if (-not (Test-Path -LiteralPath $OutputFolder)) {
 }
 $OutputFolder = (Resolve-Path -LiteralPath $OutputFolder).ProviderPath
 
-$FolderReportPath      = Join-Path $OutputFolder 'FolderPermissions.csv'
-$IdentityReportPath    = Join-Path $OutputFolder 'IdentityPermissions.csv'
-$InheritanceExceptions = Join-Path $OutputFolder 'InheritanceExceptions.csv'
-$IdentityDetailsPath   = Join-Path $OutputFolder 'ADIdentityDetails.csv'
-$ErrorLogPath          = Join-Path $OutputFolder 'Errors.log'
+# Every output file gets the same run timestamp in its name, so re-running into a
+# fixed/shared -OutputFolder never silently collides with (or overwrites) a
+# previous run's files -- each run's files are self-identifying even if moved
+# elsewhere later.
+$RunTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 
-# Wipe any prior run's files so CSVs aren't silently appended to stale data.
-foreach ($f in @($FolderReportPath, $IdentityReportPath, $InheritanceExceptions, $IdentityDetailsPath, $ErrorLogPath)) {
-    if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+$FolderReportPath      = Join-Path $OutputFolder "FolderPermissions_$RunTimestamp.csv"
+$IdentityReportPath    = Join-Path $OutputFolder "IdentityPermissions_$RunTimestamp.csv"
+$InheritanceExceptions = Join-Path $OutputFolder "InheritanceExceptions_$RunTimestamp.csv"
+$IdentityDetailsPath   = Join-Path $OutputFolder "ADIdentityDetails_$RunTimestamp.csv"
+$ErrorLogPath          = Join-Path $OutputFolder "Errors_$RunTimestamp.log"
+
+# Because names are timestamped, a collision should only happen if two runs
+# somehow started in the same second targeting the same folder. Rather than
+# silently overwrite (the previous behavior when -OutputFolder was reused),
+# refuse and require -Force -- an accidental silent overwrite of audit
+# evidence is worse than a rare, easily-retried error.
+$existingOutputs = @(@($FolderReportPath, $IdentityReportPath, $InheritanceExceptions, $IdentityDetailsPath, $ErrorLogPath) |
+    Where-Object { Test-Path -LiteralPath $_ })
+if ($existingOutputs.Count -gt 0 -and -not $Force) {
+    throw "Output file(s) already exist and -Force was not specified: $($existingOutputs -join ', '). This is unusual given the timestamped filenames -- if you intend to overwrite them, re-run with -Force."
+}
+if ($existingOutputs.Count -gt 0 -and $Force) {
+    Write-Warning "Overwriting $($existingOutputs.Count) existing output file(s) because -Force was specified."
+    foreach ($f in $existingOutputs) { Remove-Item -LiteralPath $f -Force }
 }
 
 $adAvailable = $false
@@ -624,20 +672,38 @@ function Get-InheritanceDescription {
 
 function Get-ObjectAcl {
     <#
-        Wraps [System.IO.Directory]::GetAccessControl / File equivalent with the
-        long-path fallback, returning $null (and logging) on failure rather than
-        throwing, so a single bad object never aborts the whole tree walk.
+        Wraps the ACL retrieval with the long-path fallback, returning $null (and
+        logging) on failure rather than throwing, so a single bad object never
+        aborts the whole tree walk.
+
+        Branches on PS edition: Windows PowerShell 5.1 (Desktop, full .NET
+        Framework) has GetAccessControl as static methods on Directory/File.
+        PowerShell 7+ (Core, .NET Core/.NET 5+) moved this to extension methods
+        on DirectoryInfo/FileInfo instead -- calling the old static methods there
+        throws "does not contain a method named 'GetAccessControl'".
     #>
     param([Parameter(Mandatory)][string]$ItemPath, [Parameter(Mandatory)][bool]$IsDirectory)
 
     $safePath = Get-LongPathSafe -InputPath $ItemPath
     Write-Verbose "Reading ACL: $ItemPath"
     try {
-        if ($IsDirectory) {
-            return [System.IO.Directory]::GetAccessControl($safePath)
+        if ($script:IsPSCore) {
+            if ($IsDirectory) {
+                $di = New-Object System.IO.DirectoryInfo($safePath)
+                return [System.IO.FileSystemAclExtensions]::GetAccessControl($di)
+            }
+            else {
+                $fi = New-Object System.IO.FileInfo($safePath)
+                return [System.IO.FileSystemAclExtensions]::GetAccessControl($fi)
+            }
         }
         else {
-            return [System.IO.File]::GetAccessControl($safePath)
+            if ($IsDirectory) {
+                return [System.IO.Directory]::GetAccessControl($safePath)
+            }
+            else {
+                return [System.IO.File]::GetAccessControl($safePath)
+            }
         }
     }
     catch [System.UnauthorizedAccessException] {

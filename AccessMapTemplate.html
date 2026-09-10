@@ -45,12 +45,23 @@
   .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
   .card .field b { color:var(--muted); font-weight:500; }
   .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
+  .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; }
+  .graphToolbar .group { display:flex; align-items:center; gap:4px; }
+  .graphToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
+  .depthBtn { padding:4px 9px; font-size:11px; }
+  .depthBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
   .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
-  svg.graph { width:100%; height:520px; display:block; }
-  svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; }
-  svg.graph .nodeCircle { cursor:pointer; stroke:#000; stroke-width:1; }
+  svg.graph { width:100%; height:560px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
+  svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; pointer-events:none; }
+  svg.graph .nodeGroup { cursor:grab; }
+  svg.graph .nodeGroup:active { cursor:grabbing; }
+  svg.graph .nodeCircle { stroke:#000; stroke-width:1; }
   svg.graph .centerCircle { fill:#ffb454; }
+  svg.graph .labelLine1 { fill:var(--muted); font-size:9px; }
+  svg.graph .labelLine2 { font-weight:500; }
   svg.graph .edgeLabel { fill:var(--muted); font-size:9px; }
+  svg.graph .flagRing { pointer-events:none; }
   table.datatable { width:100%; border-collapse:collapse; font-size:12px; }
   table.datatable th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); cursor:pointer; color:var(--muted); position:sticky; top:0; background:var(--panel); user-select:none; }
   table.datatable th:hover { color:var(--text); }
@@ -118,6 +129,8 @@ const TYPE_COLORS = {
 };
 
 const DORMANT_DAYS = 90;
+const RING_SPACING = 130;
+const DEPTH_CAP = 600; // safety cap on total nodes drawn in the graph, regardless of depth setting
 
 let state = {
   tab: 'identities',
@@ -125,7 +138,8 @@ let state = {
   selected: null,      // { kind: 'identity'|'folder', idx: N }
   history: [],
   tableSort: { col: null, dir: 1 },
-  tableFilter: ''
+  tableFilter: '',
+  depth: 2             // graph expansion depth: 2/3/4/5/Infinity ("Full")
 };
 
 /* ------------------------------- Precompute ------------------------------- */
@@ -351,6 +365,13 @@ function renderRadialSvg(centerLabel, centerColor, neighbors, onNodeClick) {
 
 function renderTable(rows, columns, opts) {
   // columns: [{ key, label, get(row), sortable }]
+  // The filter <input> (and the table/toolbar shells) are created exactly ONCE
+  // here and never torn down again for the lifetime of this table -- typing a
+  // character calls update() below, which only touches the header cells, the
+  // tbody rows, and the export button's row count. Rebuilding the whole
+  // container (including the input itself) on every keystroke was the earlier
+  // approach, and it silently stole focus after each character since the
+  // browser can't keep focus on an element that no longer exists.
   const container = document.createElement('div');
 
   const toolbar = document.createElement('div');
@@ -358,73 +379,87 @@ function renderTable(rows, columns, opts) {
   const filterInput = document.createElement('input');
   filterInput.placeholder = 'Filter this table...';
   filterInput.value = state.tableFilter;
-  filterInput.oninput = (e) => { state.tableFilter = e.target.value; opts.rerender(); };
   toolbar.appendChild(filterInput);
   const exportBtn = document.createElement('button');
-  exportBtn.textContent = `Export ${rows.length} row(s) as CSV`;
-  exportBtn.onclick = () => downloadCsv(opts.filename, rows, columns.map(c => ({ label: c.label, get: c.get })));
   toolbar.appendChild(exportBtn);
   container.appendChild(toolbar);
-
-  let filtered = rows;
-  const q = state.tableFilter.trim().toLowerCase();
-  if (q) {
-    filtered = rows.filter(r => columns.some(c => String(c.get(r) || '').toLowerCase().includes(q)));
-  }
-
-  if (state.tableSort.col) {
-    const col = columns.find(c => c.key === state.tableSort.col);
-    if (col) {
-      filtered = filtered.slice().sort((a, b) => {
-        const va = col.get(a), vb = col.get(b);
-        if (va < vb) return -1 * state.tableSort.dir;
-        if (va > vb) return 1 * state.tableSort.dir;
-        return 0;
-      });
-    }
-  }
 
   const table = document.createElement('table');
   table.className = 'datatable';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  columns.forEach(c => {
-    const th = document.createElement('th');
-    let arrow = '';
-    if (state.tableSort.col === c.key) arrow = state.tableSort.dir === 1 ? ' \u25b2' : ' \u25bc';
-    th.textContent = c.label + arrow;
-    th.onclick = () => {
-      if (state.tableSort.col === c.key) state.tableSort.dir *= -1;
-      else state.tableSort = { col: c.key, dir: 1 };
-      opts.rerender();
-    };
-    trh.appendChild(th);
-  });
   thead.appendChild(trh);
   table.appendChild(thead);
-
   const tbody = document.createElement('tbody');
-  const RENDER_LIMIT = 2000;
-  filtered.slice(0, RENDER_LIMIT).forEach(r => {
-    const tr = document.createElement('tr');
-    if (opts.onRowClick) { tr.className = 'rowclick'; tr.onclick = () => opts.onRowClick(r); }
-    columns.forEach(c => {
-      const td = document.createElement('td');
-      if (c.html) td.innerHTML = c.html(r); else td.textContent = c.get(r);
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
   table.appendChild(tbody);
   container.appendChild(table);
 
-  if (filtered.length > RENDER_LIMIT) {
-    const note = document.createElement('div');
-    note.className = 'graphNote';
-    note.textContent = `Showing first ${RENDER_LIMIT} of ${filtered.length} filtered rows. Narrow the filter, or use Export to get all of them.`;
-    container.appendChild(note);
+  const note = document.createElement('div');
+  note.className = 'graphNote';
+  container.appendChild(note);
+
+  function computeFilteredSorted() {
+    let filtered = rows;
+    const q = state.tableFilter.trim().toLowerCase();
+    if (q) {
+      filtered = rows.filter(r => columns.some(c => String(c.get(r) || '').toLowerCase().includes(q)));
+    }
+    if (state.tableSort.col) {
+      const col = columns.find(c => c.key === state.tableSort.col);
+      if (col) {
+        filtered = filtered.slice().sort((a, b) => {
+          const va = col.get(a), vb = col.get(b);
+          if (va < vb) return -1 * state.tableSort.dir;
+          if (va > vb) return 1 * state.tableSort.dir;
+          return 0;
+        });
+      }
+    }
+    return filtered;
   }
 
+  const RENDER_LIMIT = 2000;
+
+  function update() {
+    const filtered = computeFilteredSorted();
+
+    trh.innerHTML = '';
+    columns.forEach(c => {
+      const th = document.createElement('th');
+      let arrow = '';
+      if (state.tableSort.col === c.key) arrow = state.tableSort.dir === 1 ? ' \u25b2' : ' \u25bc';
+      th.textContent = c.label + arrow;
+      th.onclick = () => {
+        if (state.tableSort.col === c.key) state.tableSort.dir *= -1;
+        else state.tableSort = { col: c.key, dir: 1 };
+        update();
+      };
+      trh.appendChild(th);
+    });
+
+    tbody.innerHTML = '';
+    filtered.slice(0, RENDER_LIMIT).forEach(r => {
+      const tr = document.createElement('tr');
+      if (opts.onRowClick) { tr.className = 'rowclick'; tr.onclick = () => opts.onRowClick(r); }
+      columns.forEach(c => {
+        const td = document.createElement('td');
+        if (c.html) td.innerHTML = c.html(r); else td.textContent = c.get(r);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    exportBtn.textContent = `Export ${filtered.length} row(s) as CSV`;
+    exportBtn.onclick = () => downloadCsv(opts.filename, filtered, columns.map(c => ({ label: c.label, get: c.get })));
+
+    note.textContent = filtered.length > RENDER_LIMIT
+      ? `Showing first ${RENDER_LIMIT} of ${filtered.length} filtered rows. Narrow the filter, or use Export to get all of them.`
+      : '';
+  }
+
+  filterInput.oninput = (e) => { state.tableFilter = e.target.value; update(); };
+
+  update();
   return container;
 }
 
@@ -484,15 +519,10 @@ function renderIdentity(idx) {
     { key: 'via', label: 'Granted via group', get: r => r.e[6] >= 0 ? DATA.identities[r.e[6]].name : '' }
   ];
   const tableHost = document.createElement('div');
-  const rerenderTable = () => {
-    tableHost.innerHTML = '';
-    tableHost.appendChild(renderTable(allRows, columns, {
-      filename: `access_${(idn.name||'identity').replace(/[^a-z0-9]+/gi,'_')}.csv`,
-      rerender: rerenderTable,
-      onRowClick: (r) => selectFolder(r.e[0], true)
-    }));
-  };
-  rerenderTable();
+  tableHost.appendChild(renderTable(allRows, columns, {
+    filename: `access_${(idn.name||'identity').replace(/[^a-z0-9]+/gi,'_')}.csv`,
+    onRowClick: (r) => selectFolder(r.e[0], true)
+  }));
   content.appendChild(tableHost);
 }
 
@@ -544,15 +574,10 @@ function renderFolder(idx) {
     { key: 'enabled', label: 'Enabled', get: r => fmtBool(DATA.identities[r.e[1]].enabled) }
   ];
   const tableHost = document.createElement('div');
-  const rerenderTable = () => {
-    tableHost.innerHTML = '';
-    tableHost.appendChild(renderTable(allRows, columns, {
-      filename: `access_${f.path.replace(/[^a-z0-9]+/gi,'_')}.csv`,
-      rerender: rerenderTable,
-      onRowClick: (r) => selectIdentity(r.e[1], true)
-    }));
-  };
-  rerenderTable();
+  tableHost.appendChild(renderTable(allRows, columns, {
+    filename: `access_${f.path.replace(/[^a-z0-9]+/gi,'_')}.csv`,
+    onRowClick: (r) => selectIdentity(r.e[1], true)
+  }));
   content.appendChild(tableHost);
 }
 

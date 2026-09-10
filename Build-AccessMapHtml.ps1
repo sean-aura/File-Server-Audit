@@ -34,11 +34,31 @@
     referenced -- everything needed is in the one .html file.
 
 .PARAMETER InputFolder
-    The output folder from a previous Invoke-NTFSPermissionAudit.ps1 run (i.e. the
-    folder containing IdentityPermissions.csv).
+    The output folder from a previous Invoke-NTFSPermissionAudit.ps1 run. Its CSV
+    file names include a run timestamp (e.g. IdentityPermissions_20260910_211500.csv);
+    this script finds the matching set of files automatically. If -InputFolder
+    contains more than one run's files (you pointed multiple runs at the same
+    folder), the most recent set (by file timestamp) is used, with a warning --
+    pass a folder containing just the one run you want if that's ambiguous.
 
 .PARAMETER OutputHtmlPath
-    Where to write the HTML file. Defaults to AccessMap.html inside -InputFolder.
+    Where to write the HTML file. Accepts either:
+      - A full path ending in a file name (e.g. C:\Reports\FinanceMap.html) --
+        used exactly as given; its parent folder is created if needed.
+      - An existing, empty directory -- a timestamped file name is generated
+        inside it (matching the source run's timestamp where possible).
+      - Omitted entirely -- defaults to a timestamped file name inside
+        -InputFolder.
+    If you pass an existing directory that is NOT empty, this deliberately
+    errors instead of guessing a file name into a folder that already has
+    content -- be explicit about the file name in that case (or point at a
+    different, empty output directory).
+
+.PARAMETER Force
+    Only needed if the resolved output file already exists (most commonly
+    because you specified an exact -OutputHtmlPath that collides with a
+    previous file); without it, the script errors rather than silently
+    overwriting.
 
 .PARAMETER MaxEdgesPerNode
     How many neighbors to draw in the radial graph for a single selected node before
@@ -73,7 +93,9 @@ param(
 
     [string]$OutputHtmlPath,
 
-    [int]$MaxEdgesPerNode = 60
+    [int]$MaxEdgesPerNode = 60,
+
+    [switch]$Force
 )
 
 $ScriptVersion = '0.1.0'
@@ -81,14 +103,64 @@ $ScriptVersion = '0.1.0'
 $ErrorActionPreference = 'Stop'
 
 $InputFolder = (Resolve-Path -LiteralPath $InputFolder).ProviderPath
-$identityPermsPath = Join-Path $InputFolder 'IdentityPermissions.csv'
-$adDetailsPath     = Join-Path $InputFolder 'ADIdentityDetails.csv'
 
-if (-not (Test-Path -LiteralPath $identityPermsPath)) {
-    throw "IdentityPermissions.csv not found in '$InputFolder'. Run Invoke-NTFSPermissionAudit.ps1 first."
+# Invoke-NTFSPermissionAudit.ps1's output file names include a run timestamp (e.g.
+# IdentityPermissions_20260910_211500.csv), so find the matching file(s) by pattern
+# rather than assuming a fixed name. A legacy fixed name is still accepted as a
+# fallback (e.g. a file that was manually renamed).
+function Find-LatestRunFile {
+    param([Parameter(Mandatory)][string]$Prefix, [switch]$Required)
+
+    $candidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter "$Prefix*.csv" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+
+    if ($candidates.Count -eq 0) {
+        $legacy = Join-Path $InputFolder "$Prefix.csv"
+        if (Test-Path -LiteralPath $legacy) { return $legacy }
+        if ($Required) { throw "$Prefix*.csv not found in '$InputFolder'. Run Invoke-NTFSPermissionAudit.ps1 first." }
+        return $null
+    }
+    if ($candidates.Count -gt 1) {
+        Write-Warning "Multiple $Prefix*.csv files found in '$InputFolder' (output from more than one audit run?). Using the most recent: $($candidates[0].Name). Point -InputFolder at a folder containing just the run you want if this isn't what you intended."
+    }
+    return $candidates[0].FullName
 }
+
+$identityPermsFile = Find-LatestRunFile -Prefix 'IdentityPermissions' -Required
+$identityPermsPath = $identityPermsFile
+$adDetailsPath     = Find-LatestRunFile -Prefix 'ADIdentityDetails'
+
+# Reuse the source run's timestamp for the default output file name too, so the
+# HTML file visibly pairs with the CSVs it was built from. Falls back to "now" if
+# the chosen file doesn't match the expected timestamp pattern (e.g. it was the
+# legacy fixed-name fallback, or was renamed).
+$RunTimestamp = if ($identityPermsFile -match '_(\d{8}_\d{6})\.csv$') { $Matches[1] } else { Get-Date -Format 'yyyyMMdd_HHmmss' }
+
+# Resolve -OutputHtmlPath into a concrete target file path:
+#   - a path ending in an existing/creatable file name -> used exactly as given
+#   - an existing, EMPTY directory -> a timestamped file name is generated inside it
+#   - an existing, NON-empty directory -> error (deliberately -- don't guess a file
+#     name into a folder that already has other content in it)
+#   - omitted -> defaults inside -InputFolder
 if (-not $OutputHtmlPath) {
-    $OutputHtmlPath = Join-Path $InputFolder 'AccessMap.html'
+    $OutputHtmlPath = Join-Path $InputFolder "AccessMap_$RunTimestamp.html"
+}
+elseif (Test-Path -LiteralPath $OutputHtmlPath -PathType Container) {
+    $existingItems = @(Get-ChildItem -LiteralPath $OutputHtmlPath -Force -ErrorAction SilentlyContinue)
+    if ($existingItems.Count -gt 0) {
+        throw "'$OutputHtmlPath' is an existing, non-empty folder. Specify a full file path for -OutputHtmlPath (e.g. '$(Join-Path $OutputHtmlPath "AccessMap_$RunTimestamp.html")'), or point at a different/empty output location, rather than have this script guess a file name into a folder that already has content."
+    }
+    $OutputHtmlPath = Join-Path $OutputHtmlPath "AccessMap_$RunTimestamp.html"
+}
+else {
+    $parent = Split-Path -Path $OutputHtmlPath -Parent
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+}
+
+if ((Test-Path -LiteralPath $OutputHtmlPath) -and -not $Force) {
+    throw "Output file '$OutputHtmlPath' already exists. Re-run with -Force to overwrite it, or choose a different -OutputHtmlPath."
 }
 
 Write-Host "Build-AccessMapHtml v$ScriptVersion" -ForegroundColor Cyan
@@ -97,7 +169,7 @@ $permRows = Import-Csv -LiteralPath $identityPermsPath
 Write-Verbose "Loaded $($permRows.Count) permission row(s)."
 
 $adDetails = @{}
-if (Test-Path -LiteralPath $adDetailsPath) {
+if ($adDetailsPath -and (Test-Path -LiteralPath $adDetailsPath)) {
     Write-Host "Reading $adDetailsPath ..." -ForegroundColor Cyan
     foreach ($row in (Import-Csv -LiteralPath $adDetailsPath)) {
         if ($row.IdentitySid) { $adDetails[$row.IdentitySid] = $row }
@@ -105,7 +177,7 @@ if (Test-Path -LiteralPath $adDetailsPath) {
     Write-Verbose "Loaded AD details for $($adDetails.Count) identity(ies)."
 }
 else {
-    Write-Warning "ADIdentityDetails.csv not found in '$InputFolder'. Identity nodes will show name/type only (no department/manager/account-state info)."
+    Write-Warning "No ADIdentityDetails*.csv found in '$InputFolder'. Identity nodes will show name/type only (no department/manager/account-state info)."
 }
 
 #region Build compact index structures -----------------------------------------
@@ -172,7 +244,7 @@ function Get-OrAdd-Identity {
 # Seed the identity index from ADIdentityDetails.csv first, so every known
 # identity (including ones that only show up as a GrantedViaGroup reference)
 # gets a full entry even if a later loop encounters it first by name only.
-foreach ($sid in $adDetails.Keys) {
+foreach ($sid in ($adDetails.Keys | Sort-Object)) {
     $d = $adDetails[$sid]
     Get-OrAdd-Identity -Sid $sid -Name $d.IdentityName -Type $d.IdentityType | Out-Null
 }

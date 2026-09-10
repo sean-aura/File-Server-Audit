@@ -66,7 +66,14 @@
 
 .PARAMETER OutputFolder
     Where the CSV output is written. Defaults to a timestamped folder in the
-    current directory.
+    current directory. Output file names also include the same run timestamp
+    (e.g. Shares_20260910_211500.csv), so re-running into a fixed/shared
+    -OutputFolder never overwrites a previous run's files.
+
+.PARAMETER Force
+    Only needed in the rare case a file with the exact timestamped name already
+    exists (e.g. two runs started within the same second); without it, the
+    script errors rather than silently overwriting.
 
 .EXAMPLE
     .\Get-FileServerShareInventory.ps1 -DfsPath '\\contoso.com\Public\Finance','\\contoso.com\Public\HR'
@@ -101,7 +108,9 @@ param(
 
     [switch]$NoRecursion,
 
-    [string]$OutputFolder = ".\ShareInventory_$(Get-Date -Format yyyyMMdd_HHmmss)"
+    [string]$OutputFolder = ".\ShareInventory_$(Get-Date -Format yyyyMMdd_HHmmss)",
+
+    [switch]$Force
 )
 
 $ScriptVersion = '0.1.0'
@@ -116,8 +125,21 @@ if (-not (Test-Path -LiteralPath $OutputFolder)) {
     New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
 }
 $OutputFolder = (Resolve-Path -LiteralPath $OutputFolder).ProviderPath
-$SharesCsv = Join-Path $OutputFolder 'Shares.csv'
-$DfsCsv    = Join-Path $OutputFolder 'DfsMapping.csv'
+
+# Timestamped like Invoke-NTFSPermissionAudit.ps1's outputs, so re-running into a
+# fixed/shared -OutputFolder never silently collides with a previous run's files.
+$RunTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$SharesCsv = Join-Path $OutputFolder "Shares_$RunTimestamp.csv"
+$DfsCsv    = Join-Path $OutputFolder "DfsMapping_$RunTimestamp.csv"
+
+$existingOutputs = @(@($SharesCsv, $DfsCsv) | Where-Object { Test-Path -LiteralPath $_ })
+if ($existingOutputs.Count -gt 0 -and -not $Force) {
+    throw "Output file(s) already exist and -Force was not specified: $($existingOutputs -join ', '). This is unusual given the timestamped filenames -- if you intend to overwrite them, re-run with -Force."
+}
+if ($existingOutputs.Count -gt 0 -and $Force) {
+    Write-Warning "Overwriting $($existingOutputs.Count) existing output file(s) because -Force was specified."
+    foreach ($f in $existingOutputs) { Remove-Item -LiteralPath $f -Force }
+}
 
 Write-Host "File Server Share Inventory v$ScriptVersion. Output folder: $OutputFolder" -ForegroundColor Cyan
 
@@ -265,9 +287,9 @@ if ($ComputerName) {
             }
 
             try {
-                $shares = Get-SmbShare -CimSession $cimSession | Where-Object {
+                $shares = @(Get-SmbShare -CimSession $cimSession | Where-Object {
                     -not $_.Special -and ($excludedShares -notcontains $_.Name)
-                }
+                })
                 Write-Verbose "$computer : found $($shares.Count) non-default share(s)"
 
                 foreach ($share in $shares) {
