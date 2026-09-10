@@ -146,6 +146,151 @@ let state = {
 
 const byIdentity = new Map();  // idx -> [edgeIdx,...]
 const byFolder = new Map();    // idx -> [edgeIdx,...]
+let adjacency = new Map();     // 'f:N'|'i:N' -> Map<neighborKey, {edges:[{type,e,ei}]}> -- built in precompute()
+
+function buildAdjacency() {
+  const adj = new Map();
+  function ensure(key) { if (!adj.has(key)) adj.set(key, new Map()); return adj.get(key); }
+  function link(k1, k2, edgeDescr) {
+    const m1 = ensure(k1), m2 = ensure(k2);
+    if (!m1.has(k2)) m1.set(k2, { edges: [] });
+    if (!m2.has(k1)) m2.set(k1, { edges: [] });
+    m1.get(k2).edges.push(edgeDescr);
+    m2.get(k1).edges.push(edgeDescr);
+  }
+  // Two kinds of relationship become graph edges: the folder<->identity access
+  // ACE itself, and (when the ACE was granted via a group) an identity<->group
+  // membership edge -- so multi-hop expansion can step across "who else is in
+  // this group" and "what else does this group's access apply to", not just
+  // one folder's direct ACL.
+  DATA.edges.forEach((e, ei) => {
+    const fKey = 'f:' + e[0], iKey = 'i:' + e[1];
+    link(fKey, iKey, { type: 'access', e, ei });
+    if (e[6] >= 0) link(iKey, 'i:' + e[6], { type: 'membership', e, ei });
+  });
+  return adj;
+}
+
+function bestEdgeScore(edgeInfo) {
+  // Same "explicit + higher rights first" priority used elsewhere, so the
+  // most notable relationship wins when multiple edges connect the same pair
+  // or when a hop has more candidates than the per-source/overall cap allows.
+  let best = -1;
+  edgeInfo.edges.forEach(d => {
+    const s = d.type === 'membership' ? 40 : ((d.e[3] ? 0 : 1000) + RIGHTS_WEIGHT[d.e[2]]);
+    if (s > best) best = s;
+  });
+  return best;
+}
+
+function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
+  // Breadth-first expansion from centerKey up to `depth` hops (Infinity for
+  // "Full"), capped overall at `cap` total nodes and, per hop, at
+  // `perSourceCap` neighbors contributed by any single already-visited node
+  // (so one "hub" like Everyone/Domain Users can't flood a single hop and
+  // crowd out everything else -- reuses MAX_EDGES_PER_NODE for this).
+  const visited = new Map();   // key -> { hop, from, edgeInfo }
+  visited.set(centerKey, { hop: 0, from: null });
+  let frontier = [centerKey];
+  const layers = [[centerKey]];
+  let truncated = false;
+
+  for (let hop = 1; hop <= depth && visited.size < cap; hop++) {
+    const candidates = [];
+    frontier.forEach(fKey => {
+      const nbrs = adjacency.get(fKey) || new Map();
+      const fromThisSource = [];
+      nbrs.forEach((edgeInfo, nKey) => {
+        if (!visited.has(nKey)) fromThisSource.push({ nKey, fromKey: fKey, edgeInfo, score: bestEdgeScore(edgeInfo) });
+      });
+      fromThisSource.sort((a, b) => b.score - a.score);
+      if (fromThisSource.length > perSourceCap) truncated = true;
+      candidates.push(...fromThisSource.slice(0, perSourceCap));
+    });
+    const bestByKey = new Map();
+    candidates.forEach(c => {
+      const existing = bestByKey.get(c.nKey);
+      if (!existing || c.score > existing.score) bestByKey.set(c.nKey, c);
+    });
+    let sorted = Array.from(bestByKey.values()).sort((a, b) => b.score - a.score);
+    const budget = cap - visited.size;
+    if (sorted.length > budget) truncated = true;
+    sorted = sorted.slice(0, Math.max(0, budget));
+    const nextFrontier = [];
+    sorted.forEach(c => {
+      visited.set(c.nKey, { hop, from: c.fromKey, edgeInfo: c.edgeInfo });
+      nextFrontier.push(c.nKey);
+    });
+    layers.push(nextFrontier);
+    frontier = nextFrontier;
+    if (nextFrontier.length === 0) break;
+  }
+  return { visited, layers, truncated };
+}
+
+function layoutRadial(layers, visited) {
+  // Concentric rings by hop distance; within a ring, nodes are angularly
+  // clustered near their parent's angle (a simple radial-tree heuristic) so
+  // related nodes stay visually grouped instead of scattering randomly.
+  const positions = new Map();
+  positions.set(layers[0][0], { x: 0, y: 0, angle: 0 });
+  for (let hop = 1; hop < layers.length; hop++) {
+    const nodesThisHop = layers[hop];
+    if (nodesThisHop.length === 0) continue;
+    const byParent = new Map();
+    nodesThisHop.forEach(k => {
+      const p = visited.get(k).from;
+      if (!byParent.has(p)) byParent.set(p, []);
+      byParent.get(p).push(k);
+    });
+    const parentKeys = Array.from(byParent.keys()).sort((a, b) =>
+      (positions.get(a) ? positions.get(a).angle : 0) - (positions.get(b) ? positions.get(b).angle : 0));
+    const total = nodesThisHop.length;
+    parentKeys.forEach(p => {
+      const kids = byParent.get(p);
+      const parentAngle = positions.get(p) ? positions.get(p).angle : 0;
+      const arcWidth = (kids.length / total) * 2 * Math.PI;
+      const startAngle = parentAngle - arcWidth / 2;
+      kids.forEach((k, i) => {
+        const angle = kids.length === 1 ? parentAngle : startAngle + (arcWidth * (i + 0.5) / kids.length);
+        positions.set(k, { angle, x: 0, y: 0 });
+      });
+    });
+  }
+  layers.forEach((nodesThisHop, hop) => {
+    const radius = hop * RING_SPACING;
+    nodesThisHop.forEach(k => {
+      const pos = positions.get(k);
+      pos.x = radius * Math.cos(pos.angle - Math.PI / 2);
+      pos.y = radius * Math.sin(pos.angle - Math.PI / 2);
+    });
+  });
+  return positions;
+}
+
+function formatFolderLabel(path) {
+  // \\server\share\deep\sub\folder -> line1 "\\server\share" (context),
+  // line2 the most specific remaining segment(s), truncated from the FRONT
+  // (keeping the tail) when too long, since the deepest folder name is
+  // usually the most identifying part -- not the server/share prefix.
+  const m = path.match(/^\\\\([^\\]+)\\([^\\]+)(\\.*)?$/);
+  if (!m) return { line1: path, line2: '' };
+  const serverShare = '\\\\' + m[1] + '\\' + m[2];
+  let remainder = m[3] ? m[3].replace(/^\\/, '') : '';
+  const MAX_LINE2 = 28;
+  if (remainder.length > MAX_LINE2) remainder = '\u2026' + remainder.slice(-(MAX_LINE2 - 1));
+  return { line1: serverShare, line2: remainder };
+}
+
+function formatIdentityLabel(name) {
+  // DOMAIN\username -> line1 "DOMAIN" (muted/small), line2 "username" (the
+  // actually-identifying part). Falls back to a single line if there's no
+  // domain-style prefix (e.g. "Everyone").
+  if (!name) return { line1: '', line2: '' };
+  const idx = name.indexOf('\\');
+  if (idx === -1) return { line1: '', line2: name };
+  return { line1: name.slice(0, idx), line2: name.slice(idx + 1) };
+}
 
 function precompute() {
   DATA.edges.forEach((e, ei) => {
@@ -155,6 +300,8 @@ function precompute() {
     if (!byFolder.has(folderIdx)) byFolder.set(folderIdx, []);
     byFolder.get(folderIdx).push(ei);
   });
+
+  adjacency = buildAdjacency();
 
   // Per-folder broken-inheritance flag (edge index 4), OR'd across its edges.
   DATA.folders.forEach((f, fi) => { f.broken = false; });
@@ -174,11 +321,6 @@ function precompute() {
       }
     }
   });
-}
-
-function edgeScore(e) {
-  const inherited = e[3] ? 0 : 1;
-  return inherited * 1000 + RIGHTS_WEIGHT[e[2]];
 }
 
 /* --------------------------------- Helpers -------------------------------- */
@@ -310,54 +452,275 @@ function selectFolder(idx, recordHistory) {
   renderFolder(idx);
 }
 
-/* -------------------------------- Radial graph ------------------------------ */
+/* -------------------------------- Ego-network graph -------------------------- */
 
-function renderRadialSvg(centerLabel, centerColor, neighbors, onNodeClick) {
-  // neighbors: [{ label, color, edge, sub }], edge = raw edge array for styling
-  const W = 900, H = 520, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 90;
-  const n = neighbors.length;
-  let svg = `<svg class="graph" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) Object.keys(attrs).forEach(k => el.setAttribute(k, attrs[k]));
+  return el;
+}
 
-  neighbors.forEach((nb, i) => {
-    const angle = (2 * Math.PI * i / Math.max(n, 1)) - Math.PI / 2;
-    const x = cx + R * Math.cos(angle), y = cy + R * Math.sin(angle);
-    const e = nb.edge;
-    const color = EDGE_COLORS[e[2]];
-    const dashed = e[3] ? '5,4' : 'none';
-    const width = e[3] ? 1.5 : 3;
-    svg += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dashed}" opacity="0.85" />`;
+function nodeDisplayInfo(key) {
+  const kind = key[0], idx = parseInt(key.slice(2), 10);
+  if (kind === 'f') {
+    const f = DATA.folders[idx];
+    const lbl = formatFolderLabel(f.path);
+    return { kind: 'folder', idx, line1: lbl.line1, line2: lbl.line2, full: f.path, color: f.broken ? '#ffb454' : '#57d3d3', flagged: f.broken };
+  }
+  const idn = DATA.identities[idx];
+  const lbl = formatIdentityLabel(idn.name);
+  return { kind: 'identity', idx, line1: lbl.line1, line2: lbl.line2, full: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', flagged: idn.flagDisabled || idn.flagDormant || idn.flagLocked };
+}
+
+function edgeDisplayInfo(edgeInfo) {
+  // Pick the single best (highest-scoring) underlying edge to represent this
+  // connection visually when more than one exists between the same pair.
+  let best = null, bestScore = -1;
+  edgeInfo.edges.forEach(d => {
+    const s = d.type === 'membership' ? 40 : ((d.e[3] ? 0 : 1000) + RIGHTS_WEIGHT[d.e[2]]);
+    if (s > bestScore) { bestScore = s; best = d; }
   });
+  if (best.type === 'membership') {
+    return { label: 'Member of', color: '#c084fc', dashed: true, deny: false, broken: false };
+  }
+  const e = best.e;
+  let label = RIGHTS_LABELS[e[2]];
+  if (e[5]) label = 'Deny ' + label;
+  return { label, color: EDGE_COLORS[e[2]], dashed: !!e[3], deny: !!e[5], broken: !!e[4] };
+}
 
-  neighbors.forEach((nb, i) => {
-    const angle = (2 * Math.PI * i / Math.max(n, 1)) - Math.PI / 2;
-    const x = cx + R * Math.cos(angle), y = cy + R * Math.sin(angle);
-    const e = nb.edge;
-    const label = truncateLabel(nb.label, 22);
-    const midx = cx + (R * 0.55) * Math.cos(angle), midy = cy + (R * 0.55) * Math.sin(angle);
-    let edgeLabel = RIGHTS_LABELS[e[2]];
-    if (e[5]) edgeLabel = 'Deny ' + edgeLabel;
-    svg += `<text class="edgeLabel" x="${midx}" y="${midy}" text-anchor="middle">${esc(edgeLabel)}</text>`;
-    svg += `<circle class="nodeCircle" data-i="${i}" cx="${x}" cy="${y}" r="16" fill="${nb.color}" />`;
-    if (e[4]) svg += `<circle cx="${x + 12}" cy="${y - 12}" r="5" fill="#ffb454" stroke="#000" stroke-width="0.5" />`;
-    svg += `<text x="${x}" y="${y + 30}" text-anchor="middle">${esc(label)}</text>`;
-    if (nb.sub) svg += `<text x="${x}" y="${y + 43}" text-anchor="middle" fill="#9aa4b2" font-size="9">${esc(truncateLabel(nb.sub,24))}</text>`;
+function computeViewBox(positions) {
+  let maxAbs = 60; // minimum half-extent so a single/near-empty graph doesn't over-zoom
+  positions.forEach(p => {
+    maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
   });
+  const half = maxAbs + 140; // padding for node radius + 2-line label + margin
+  const w = half * 2, h = w * (560 / 900);
+  return { x: -w / 2, y: -h / 2, w, h };
+}
 
-  svg += `<circle class="nodeCircle centerCircle" cx="${cx}" cy="${cy}" r="26" />`;
-  svg += `<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-weight="600">${esc(truncateLabel(centerLabel, 26))}</text>`;
-
-  svg += `</svg>`;
+function renderEgoGraph(centerKey, onNavigate) {
+  const perSourceCap = MAX_EDGES_PER_NODE;
+  const depth = state.depth === Infinity ? 999 : state.depth;
+  const g = buildEgoGraph(centerKey, depth, DEPTH_CAP, perSourceCap);
+  const positions = layoutRadial(g.layers, g.visited);
+  const vb = computeViewBox(positions);
 
   const wrap = document.createElement('div');
   wrap.className = 'graphWrap';
-  wrap.innerHTML = svg;
-  wrap.querySelectorAll('.nodeCircle[data-i]').forEach(el => {
-    const i = parseInt(el.getAttribute('data-i'), 10);
-    el.addEventListener('click', () => onNodeClick(neighbors[i]));
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-    t.textContent = neighbors[i].label;
-    el.appendChild(t);
+
+  /* ---- Toolbar: depth selector + zoom controls ---- */
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graphToolbar';
+
+  const depthGroup = document.createElement('div');
+  depthGroup.className = 'group';
+  const depthLabel = document.createElement('span');
+  depthLabel.className = 'groupLabel';
+  depthLabel.textContent = 'Depth:';
+  depthGroup.appendChild(depthLabel);
+  [2, 3, 4, 5, 'Full'].forEach(d => {
+    const btn = document.createElement('button');
+    btn.className = 'depthBtn' + ((d === 'Full' ? Infinity : d) === state.depth ? ' active' : '');
+    btn.textContent = String(d);
+    btn.onclick = () => { state.depth = (d === 'Full' ? Infinity : d); onNavigate(centerKey, true /* rerenderInPlace */); };
+    depthGroup.appendChild(btn);
   });
+  toolbar.appendChild(depthGroup);
+
+  const zoomGroup = document.createElement('div');
+  zoomGroup.className = 'group';
+  const zoomLabel = document.createElement('span');
+  zoomLabel.className = 'groupLabel';
+  zoomLabel.textContent = 'Zoom:';
+  zoomGroup.appendChild(zoomLabel);
+  const btnOut = document.createElement('button');
+  btnOut.className = 'zoomBtn'; btnOut.textContent = '\u2212'; btnOut.title = 'Zoom out';
+  const btnIn = document.createElement('button');
+  btnIn.className = 'zoomBtn'; btnIn.textContent = '+'; btnIn.title = 'Zoom in';
+  const btnReset = document.createElement('button');
+  btnReset.className = 'zoomBtn'; btnReset.textContent = '\u2317'; btnReset.title = 'Reset view';
+  zoomGroup.appendChild(btnOut); zoomGroup.appendChild(btnIn); zoomGroup.appendChild(btnReset);
+  toolbar.appendChild(zoomGroup);
+
+  const hint = document.createElement('span');
+  hint.className = 'groupLabel';
+  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it';
+  toolbar.appendChild(hint);
+
+  wrap.appendChild(toolbar);
+
+  /* ---- SVG ---- */
+  const svg = svgEl('svg', { class: 'graph', viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, xmlns: 'http://www.w3.org/2000/svg' });
+  const edgesLayer = svgEl('g', { class: 'edgesLayer' });
+  const nodesLayer = svgEl('g', { class: 'nodesLayer' });
+  svg.appendChild(edgesLayer);
+  svg.appendChild(nodesLayer);
+  wrap.appendChild(svg);
+
+  // Per-node list of {el, attr} so dragging a node also drags its connected edge endpoints.
+  const linesByNode = new Map();
+  function trackLine(key, el, xAttr, yAttr) {
+    if (!linesByNode.has(key)) linesByNode.set(key, []);
+    linesByNode.get(key).push({ el, xAttr, yAttr });
+  }
+
+  // Draw edges (parent -> child, i.e. one per non-center node, connecting it to its BFS parent).
+  g.layers.forEach((layerKeys, hop) => {
+    if (hop === 0) return;
+    layerKeys.forEach(key => {
+      const info = g.visited.get(key);
+      const parentPos = positions.get(info.from);
+      const pos = positions.get(key);
+      const edisp = edgeDisplayInfo(info.edgeInfo);
+      const line = svgEl('line', {
+        x1: parentPos.x, y1: parentPos.y, x2: pos.x, y2: pos.y,
+        stroke: edisp.color, 'stroke-width': edisp.dashed ? 1.5 : 3,
+        'stroke-dasharray': edisp.dashed ? '5,4' : 'none', opacity: 0.85
+      });
+      edgesLayer.appendChild(line);
+      trackLine(info.from, line, 'x1', 'y1');
+      trackLine(key, line, 'x2', 'y2');
+
+      const midx = (parentPos.x + pos.x) / 2, midy = (parentPos.y + pos.y) / 2;
+      const elabel = svgEl('text', { class: 'edgeLabel', x: midx, y: midy, 'text-anchor': 'middle' });
+      elabel.textContent = edisp.label;
+      edgesLayer.appendChild(elabel);
+    });
+  });
+
+  // Draw nodes.
+  const allKeys = [].concat(...g.layers);
+  allKeys.forEach(key => {
+    const pos = positions.get(key);
+    const info = nodeDisplayInfo(key);
+    const isCenter = key === centerKey;
+    const r = isCenter ? 26 : 17;
+
+    const group = svgEl('g', { class: 'nodeGroup', transform: `translate(${pos.x},${pos.y})`, 'data-key': key });
+    const circle = svgEl('circle', { class: 'nodeCircle' + (isCenter ? ' centerCircle' : ''), r, fill: isCenter ? undefined : info.color });
+    group.appendChild(circle);
+
+    if (info.flagged && !isCenter) {
+      group.appendChild(svgEl('circle', { cx: r * 0.7, cy: -r * 0.7, r: 5, fill: '#ffb454', stroke: '#000', 'stroke-width': 0.5, class: 'flagRing' }));
+    }
+
+    const l1 = svgEl('text', { class: 'labelLine1', x: 0, y: r + 12, 'text-anchor': 'middle' });
+    l1.textContent = truncateLabel(info.line1, 20);
+    const l2 = svgEl('text', { class: 'labelLine2', x: 0, y: r + 24, 'text-anchor': 'middle' });
+    l2.textContent = truncateLabel(info.line2, 22);
+    group.appendChild(l1);
+    group.appendChild(l2);
+
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = info.full;
+    group.appendChild(title);
+
+    nodesLayer.appendChild(group);
+
+    /* ---- Drag handling: mousedown on a node moves it (and its edges); a
+       release without meaningful movement is treated as a click-to-navigate
+       instead, so dragging and clicking don't fight each other. ---- */
+    let dragging = false, moved = false, startClientX = 0, startClientY = 0, startX = pos.x, startY = pos.y;
+
+    function clientToSvgScale() {
+      // getBoundingClientRect is unreliable/zeroed in some test/headless
+      // environments; fall back to the viewBox's own size so the math never
+      // divides by zero or produces NaN, at some cost to precision there.
+      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+      const vbNow = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : vb;
+      const clientW = (rect && rect.width) ? rect.width : 900;
+      const clientH = (rect && rect.height) ? rect.height : 560;
+      return { sx: vbNow.width / clientW, sy: vbNow.height / clientH };
+    }
+
+    function onMouseMove(e) {
+      if (!dragging) return;
+      const scale = clientToSvgScale();
+      const dx = (e.clientX - startClientX) * scale.sx;
+      const dy = (e.clientY - startClientY) * scale.sy;
+      if (Math.abs(e.clientX - startClientX) > 2 || Math.abs(e.clientY - startClientY) > 2) moved = true;
+      const nx = startX + dx, ny = startY + dy;
+      group.setAttribute('transform', `translate(${nx},${ny})`);
+      pos.x = nx; pos.y = ny;
+      (linesByNode.get(key) || []).forEach(l => {
+        if (l.xAttr === 'x1') { l.el.setAttribute('x1', nx); l.el.setAttribute('y1', ny); }
+        else { l.el.setAttribute('x2', nx); l.el.setAttribute('y2', ny); }
+      });
+    }
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      dragging = false;
+      if (!moved && !isCenter) onNavigate(key, false);
+    }
+    group.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      dragging = true; moved = false;
+      startClientX = e.clientX; startClientY = e.clientY;
+      startX = pos.x; startY = pos.y;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+
+  /* ---- Pan (drag background) ---- */
+  let panning = false, panStartClientX = 0, panStartClientY = 0, panStartVb = null;
+  svg.addEventListener('mousedown', (e) => {
+    if (e.target !== svg) return; // a node's mousedown already stopPropagation()'d
+    panning = true;
+    panStartClientX = e.clientX; panStartClientY = e.clientY;
+    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
+    panStartVb = { x: cur[0], y: cur[1], w: cur[2], h: cur[3] };
+  });
+  function panMove(e) {
+    if (!panning) return;
+    const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    const clientW = (rect && rect.width) ? rect.width : 900;
+    const clientH = (rect && rect.height) ? rect.height : 560;
+    const dx = (e.clientX - panStartClientX) * (panStartVb.w / clientW);
+    const dy = (e.clientY - panStartClientY) * (panStartVb.h / clientH);
+    svg.setAttribute('viewBox', `${panStartVb.x - dx} ${panStartVb.y - dy} ${panStartVb.w} ${panStartVb.h}`);
+  }
+  function panEnd() { panning = false; }
+  document.addEventListener('mousemove', panMove);
+  document.addEventListener('mouseup', panEnd);
+
+  /* ---- Zoom (wheel + buttons) ---- */
+  const MIN_W = 200, MAX_W = 6000;
+  function zoomBy(factor, clientX, clientY) {
+    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
+    let [x, y, w, h] = cur;
+    const newW = Math.min(MAX_W, Math.max(MIN_W, w * factor));
+    const ratio = newW / w;
+    const newH = h * ratio;
+    let anchorX = x + w / 2, anchorY = y + h / 2;
+    if (clientX !== undefined) {
+      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+      if (rect && rect.width) {
+        anchorX = x + (clientX - rect.left) * (w / rect.width);
+        anchorY = y + (clientY - rect.top) * (h / rect.height);
+      }
+    }
+    const newX = anchorX - (anchorX - x) * ratio;
+    const newY = anchorY - (anchorY - y) * ratio;
+    svg.setAttribute('viewBox', `${newX} ${newY} ${newW} ${newH}`);
+  }
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomBy(e.deltaY > 0 ? 1.15 : (1 / 1.15), e.clientX, e.clientY);
+  }, { passive: false });
+  btnIn.onclick = () => zoomBy(1 / 1.3);
+  btnOut.onclick = () => zoomBy(1.3);
+  btnReset.onclick = () => svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+
+  if (g.truncated) {
+    const note = document.createElement('div');
+    note.className = 'graphNote';
+    note.textContent = `Some connections at this depth were too numerous to draw (kept the ${perSourceCap} most notable per node, and ${DEPTH_CAP} nodes overall). Reduce depth, or use the table below for the complete, uncapped list.`;
+    wrap.appendChild(note);
+  }
+
   return wrap;
 }
 
@@ -489,26 +852,15 @@ function renderIdentity(idx) {
   content.innerHTML = '';
   content.appendChild(identityInfoCard(idn));
 
+  const centerKey = 'i:' + idx;
+  const onNavigate = (key, inPlace) => {
+    const kind = key[0], kidx = parseInt(key.slice(2), 10);
+    if (kind === 'f') selectFolder(kidx, !inPlace); else selectIdentity(kidx, !inPlace);
+  };
+  content.appendChild(renderEgoGraph(centerKey, onNavigate));
+
   const edgeIdxs = byIdentity.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
-  const capped = allRows.slice().sort((a, b) => edgeScore(b.e) - edgeScore(a.e)).slice(0, MAX_EDGES_PER_NODE);
-
-  const neighbors = capped.map(r => {
-    const f = DATA.folders[r.e[0]];
-    return { label: f.path, color: f.broken ? '#ffb454' : '#57d3d3', edge: r.e, sub: f.broken ? 'broken inheritance' : '' };
-  });
-
-  const graphWrap = renderRadialSvg(idn.name, TYPE_COLORS[idn.type] || '#4da3ff', neighbors, (nb) => {
-    const f = capped[neighbors.indexOf(nb)];
-    selectFolder(f.e[0], true);
-  });
-  if (allRows.length > MAX_EDGES_PER_NODE) {
-    const note = document.createElement('div');
-    note.className = 'graphNote';
-    note.textContent = `Showing the ${MAX_EDGES_PER_NODE} most notable of ${allRows.length} paths (explicit access and higher rights first). Full list is in the table below.`;
-    graphWrap.appendChild(note);
-  }
-  content.appendChild(graphWrap);
 
   const columns = [
     { key: 'path', label: 'Path', get: r => DATA.folders[r.e[0]].path },
@@ -541,28 +893,15 @@ function renderFolder(idx) {
   content.innerHTML = '';
   content.appendChild(folderInfoCard(f));
 
+  const centerKey = 'f:' + idx;
+  const onNavigate = (key, inPlace) => {
+    const kind = key[0], kidx = parseInt(key.slice(2), 10);
+    if (kind === 'f') selectFolder(kidx, !inPlace); else selectIdentity(kidx, !inPlace);
+  };
+  content.appendChild(renderEgoGraph(centerKey, onNavigate));
+
   const edgeIdxs = byFolder.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
-  const capped = allRows.slice().sort((a, b) => edgeScore(b.e) - edgeScore(a.e)).slice(0, MAX_EDGES_PER_NODE);
-
-  const neighbors = capped.map(r => {
-    const idn = DATA.identities[r.e[1]];
-    let sub = idn.type || '';
-    if (r.e[6] >= 0) sub = 'via ' + DATA.identities[r.e[6]].name;
-    return { label: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', edge: r.e, sub };
-  });
-
-  const graphWrap = renderRadialSvg(truncateLabel(f.path, 26), '#57d3d3', neighbors, (nb) => {
-    const r = capped[neighbors.indexOf(nb)];
-    selectIdentity(r.e[1], true);
-  });
-  if (allRows.length > MAX_EDGES_PER_NODE) {
-    const note = document.createElement('div');
-    note.className = 'graphNote';
-    note.textContent = `Showing the ${MAX_EDGES_PER_NODE} most notable of ${allRows.length} identities (explicit access and higher rights first). Full list is in the table below.`;
-    graphWrap.appendChild(note);
-  }
-  content.appendChild(graphWrap);
 
   const columns = [
     { key: 'name', label: 'Identity', get: r => DATA.identities[r.e[1]].name },

@@ -206,12 +206,35 @@ What it gives you:
 
 - **Search/browse** identities or folders in the left sidebar.
 - **Select an identity**: an info card (title, department, manager, enabled/
-  locked/last-logon from `ADIdentityDetails.csv`), a radial graph of the
-  folders they can reach, and a full sortable table of every path (with
-  rights, inherited/broken-here, and which group granted it if any) --
-  click any row/node to pivot straight to that folder.
+  locked/last-logon from `ADIdentityDetails.csv`), a multi-hop relationship
+  graph centered on them, and a full sortable table of every path they can
+  reach (with rights, inherited/broken-here, and which group granted it if
+  any) -- click any row/node to pivot straight to that folder.
 - **Select a folder**: the mirror image -- who has access, via which group,
   and whether it's inherited.
+- **The graph itself**: centered on your current selection (highlighted),
+  with concentric rings of related nodes fanning outward -- folders,
+  identities, and the group memberships connecting them (so you can see not
+  just "who has access to this folder" but "who else shares access via the
+  same group" and "what else does that group reach"). It's fully
+  interactive:
+  - **Depth control** (2 / 3 / 4 / 5 / Full): how many hops to expand from
+    the center. Defaults to 2 to keep the first view uncluttered; push it
+    out when you want to trace a longer chain.
+  - **Zoom**: mouse wheel (zooms toward the cursor), or the +/-/reset
+    buttons in the toolbar.
+  - **Pan**: click-drag empty space in the graph.
+  - **Drag individual nodes**: click-drag any node to reposition it (its
+    connected lines follow) -- useful for untangling a busy cluster by hand.
+  - **Click any node, at any depth, to make it the new center** (it turns
+    yellow, like the current selection always does) -- so you can follow a
+    chain outward (user -> group -> folder -> other group -> ...) without
+    losing your place; **Back** retraces your steps.
+  - **Labels**: folder nodes show `\\server\share` on a small line above the
+    more specific `deepest\sub folder` name below it (truncated from the
+    *front* if long, so the identifying part at the end stays visible);
+    identity nodes show the domain small, name below. Hover any node for
+    the full, untruncated text.
 - **Quick filters**: "Broken inheritance folders" and "Disabled/dormant
   identities" (no logon in 90+ days, or disabled/locked) jump straight to
   the two things a review usually cares about most.
@@ -220,17 +243,20 @@ What it gives you:
   browser, no server round-trip.
 - A **Back** button to retrace your clicks as you pivot between nodes.
 
-The radial graph for a single node caps at the 60 most notable neighbors
-(explicit/non-inherited access and higher rights levels first) to stay
-readable and fast without a query engine behind it -- the complete,
-uncapped list is always in the sortable table right below the graph, and is
-what gets exported.
+Since there's no query engine behind a static file, the graph still caps
+itself to stay readable and responsive: at most `-MaxEdgesPerNode` (default
+60) neighbors are drawn per hop *from any single already-visited node*
+(explicit/non-inherited access and higher rights levels first) -- so one
+"hub" like Everyone or Domain Users can't flood a single hop and crowd out
+everything else -- and at most 600 total nodes across the whole graph
+regardless of depth. When either cap is hit, a note says so; the complete,
+uncapped list for the currently-selected node is always in the sortable
+table below the graph, and is what gets exported.
 
-`-MaxEdgesPerNode` (default 60) controls that cap. For very large audits
-(hundreds of thousands of rows), the whole dataset is embedded as JSON in
-the one HTML file, which can get large (tens of MB) -- still workable, but
-if it feels sluggish, generate a map per share/subtree rather than one for
-the whole server.
+For very large audits (hundreds of thousands of rows), the whole dataset is
+embedded as JSON in the one HTML file, which can get large (tens of MB) --
+still workable, but if it feels sluggish, generate a map per share/subtree
+rather than one for the whole server, or keep the depth setting low.
 
 **`Build-AccessMapHtml.ps1` needs `AccessMapTemplate.html` in the same
 folder** (it fills in the data and writes the result as `AccessMap.html`) --
