@@ -183,31 +183,43 @@ function bestEdgeScore(edgeInfo) {
   return best;
 }
 
+const HUB_DEGREE_THRESHOLD = 15;
+
 function isExpandable(key, isCenter) {
   // Gates what a node reveals when the BFS steps OUT of it (not whether it
   // appears at all -- it's always added as a neighbor of whatever DID reveal
   // it). The center is always fully expanded, whatever type it is -- that's
   // the whole point of clicking a node to make it the new root. Beyond that:
   //   - Folders: always fully expandable (that's the core "who has access" view).
-  //   - Users: always fully expandable (their personal footprint is usually
-  //     small and exactly the kind of lateral trace this graph is for).
-  //   - Groups (not centered): 'membershipOnly' -- reveal who else is in the
-  //     group, but NOT the group's own access to other, unrelated folders.
-  //     Groups are commonly used for broad, reusable access grants, so
-  //     without this a single shared group turns into a hub that bridges
-  //     two otherwise-unrelated parts of the tree into one tangled view.
   //   - Unresolved / Well-known (Everyone, SYSTEM, etc.), not centered:
   //     'none' -- these are frequently the biggest accidental hubs of all
   //     (a stale orphaned SID left on hundreds of ACLs, or a default group
   //     that's on nearly everything), and rarely carry any real signal
   //     about "what else is related to this" once you already know they're
   //     just Everyone or a leftover SID.
+  //   - Groups (not centered): 'membershipOnly' -- reveal who else is in the
+  //     group, but NOT the group's own access to other, unrelated folders.
+  //     Groups are commonly used for broad, reusable access grants, so
+  //     without this a single shared group turns into a hub that bridges
+  //     two otherwise-unrelated parts of the tree into one tangled view.
+  //   - Users (not centered): 'full' UNLESS their total fan-out across the
+  //     whole scan (their degree in byIdentity) exceeds HUB_DEGREE_THRESHOLD,
+  //     in which case 'membershipOnly', same as a Group. A named User's
+  //     personal footprint is usually small and worth tracing laterally --
+  //     but built-in/admin/service accounts (Administrator, svc-backup,
+  //     etc.) routinely have ACEs across huge swathes of a server and are
+  //     just as hub-like as a broadly-permissioned Group; gating purely by
+  //     "is this a Group" missed exactly that case (a User-typed account
+  //     with 100+ folders showed up as a second hub bridging unrelated
+  //     parts of the tree together, the same problem groups had before).
   if (isCenter) return 'full';
   if (key[0] === 'f') return 'full';
   const idx = parseInt(key.slice(2), 10);
   const idn = DATA.identities[idx];
   if (idn.type === 'Unresolved' || idn.type === 'Well-known / Local') return 'none';
   if (idn.type === 'Group') return 'membershipOnly';
+  const degree = (byIdentity.get(idx) || []).length;
+  if (degree > HUB_DEGREE_THRESHOLD) return 'membershipOnly';
   return 'full';
 }
 
@@ -578,7 +590,7 @@ function renderEgoGraph(centerKey, onNavigate) {
 
   const hint = document.createElement('span');
   hint.className = 'groupLabel';
-  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it \u00b7 groups/well-known accounts/unresolved SIDs show only their direct reach here -- click one to expand it fully';
+  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it \u00b7 groups, well-known accounts, unresolved SIDs, and other high-fan-out accounts show only their direct reach here -- click one to expand it fully';
   toolbar.appendChild(hint);
 
   wrap.appendChild(toolbar);

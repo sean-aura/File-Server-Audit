@@ -783,7 +783,28 @@ function Process-Object {
 
     $inheritanceBroken = $acl.AreAccessRulesProtected
     $owner = $null
-    try { $owner = (Resolve-IdentityInfo -IdentityReference $acl.GetOwner([System.Security.Principal.NTAccount])).Name } catch { $owner = $acl.Owner }
+    try {
+        # Preferred: resolve to a friendly name via the same identity cache/AD
+        # lookup used everywhere else.
+        $owner = (Resolve-IdentityInfo -IdentityReference $acl.GetOwner([System.Security.Principal.NTAccount])).Name
+    }
+    catch {
+        # GetOwner(NTAccount) throws when the owner SID can't be translated to a
+        # name -- an orphaned/foreign owner SID (a deleted account, a NAS's own
+        # unmapped local account, etc.) is a common, non-exceptional case, not a
+        # sign anything is wrong with the scan. Fall back to the raw SID, which
+        # needs no translation and essentially never fails.
+        try {
+            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            # Extremely unlikely (would mean the ACL itself has no readable
+            # owner at all), but never let owner resolution abort the whole
+            # scan over one object -- log it and move on.
+            Write-AuditError -ItemPath $ItemPath -Message "Could not determine owner (neither name nor SID resolved): $($_.Exception.Message)"
+            $owner = '(unresolved owner)'
+        }
+    }
 
     if ($inheritanceBroken -and $IsDirectory) {
         Write-Verbose "Inheritance is BROKEN at: $ItemPath"
