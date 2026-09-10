@@ -183,12 +183,41 @@ function bestEdgeScore(edgeInfo) {
   return best;
 }
 
+function isExpandable(key, isCenter) {
+  // Gates what a node reveals when the BFS steps OUT of it (not whether it
+  // appears at all -- it's always added as a neighbor of whatever DID reveal
+  // it). The center is always fully expanded, whatever type it is -- that's
+  // the whole point of clicking a node to make it the new root. Beyond that:
+  //   - Folders: always fully expandable (that's the core "who has access" view).
+  //   - Users: always fully expandable (their personal footprint is usually
+  //     small and exactly the kind of lateral trace this graph is for).
+  //   - Groups (not centered): 'membershipOnly' -- reveal who else is in the
+  //     group, but NOT the group's own access to other, unrelated folders.
+  //     Groups are commonly used for broad, reusable access grants, so
+  //     without this a single shared group turns into a hub that bridges
+  //     two otherwise-unrelated parts of the tree into one tangled view.
+  //   - Unresolved / Well-known (Everyone, SYSTEM, etc.), not centered:
+  //     'none' -- these are frequently the biggest accidental hubs of all
+  //     (a stale orphaned SID left on hundreds of ACLs, or a default group
+  //     that's on nearly everything), and rarely carry any real signal
+  //     about "what else is related to this" once you already know they're
+  //     just Everyone or a leftover SID.
+  if (isCenter) return 'full';
+  if (key[0] === 'f') return 'full';
+  const idx = parseInt(key.slice(2), 10);
+  const idn = DATA.identities[idx];
+  if (idn.type === 'Unresolved' || idn.type === 'Well-known / Local') return 'none';
+  if (idn.type === 'Group') return 'membershipOnly';
+  return 'full';
+}
+
 function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
   // Breadth-first expansion from centerKey up to `depth` hops (Infinity for
   // "Full"), capped overall at `cap` total nodes and, per hop, at
-  // `perSourceCap` neighbors contributed by any single already-visited node
-  // (so one "hub" like Everyone/Domain Users can't flood a single hop and
-  // crowd out everything else -- reuses MAX_EDGES_PER_NODE for this).
+  // `perSourceCap` neighbors contributed by any single already-visited node.
+  // isExpandable() above additionally prevents hub-type nodes (groups,
+  // unresolved SIDs, well-known accounts) from being walked OUT of unless
+  // they're the actual selected center -- see its comment for why.
   const visited = new Map();   // key -> { hop, from, edgeInfo }
   visited.set(centerKey, { hop: 0, from: null });
   let frontier = [centerKey];
@@ -198,10 +227,14 @@ function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
   for (let hop = 1; hop <= depth && visited.size < cap; hop++) {
     const candidates = [];
     frontier.forEach(fKey => {
+      const mode = isExpandable(fKey, fKey === centerKey);
+      if (mode === 'none') return;
       const nbrs = adjacency.get(fKey) || new Map();
       const fromThisSource = [];
       nbrs.forEach((edgeInfo, nKey) => {
-        if (!visited.has(nKey)) fromThisSource.push({ nKey, fromKey: fKey, edgeInfo, score: bestEdgeScore(edgeInfo) });
+        if (visited.has(nKey)) return;
+        if (mode === 'membershipOnly' && !edgeInfo.edges.some(d => d.type === 'membership')) return;
+        fromThisSource.push({ nKey, fromKey: fKey, edgeInfo, score: bestEdgeScore(edgeInfo) });
       });
       fromThisSource.sort((a, b) => b.score - a.score);
       if (fromThisSource.length > perSourceCap) truncated = true;
@@ -545,7 +578,7 @@ function renderEgoGraph(centerKey, onNavigate) {
 
   const hint = document.createElement('span');
   hint.className = 'groupLabel';
-  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it';
+  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it \u00b7 groups/well-known accounts/unresolved SIDs show only their direct reach here -- click one to expand it fully';
   toolbar.appendChild(hint);
 
   wrap.appendChild(toolbar);
@@ -839,7 +872,8 @@ function identityInfoCard(idn) {
   div.innerHTML =
     `<h2>${esc(idn.name || '(unknown)')} <span style="font-weight:400;color:var(--muted);font-size:12px;">${esc(idn.type||'')}</span> ${flags.join(' ')}</h2>` +
     field('Title', idn.title) + field('Department', idn.dept) + field('Manager', idn.manager) +
-    field('Email', idn.email) + field('Last logon (approx.)', idn.lastLogon) + field('Password last set', idn.pwdSet) +
+    field('Email', idn.email) + field('Last logon (approx.)', idn.lastLogon) +
+    field('Last modified (AD)', idn.changed) + field('Password last set', idn.pwdSet) +
     field('Account expires', idn.expires) + field('Created', idn.created) +
     field('Group scope', idn.groupScope) + field('Direct member count', idn.memberCount) + field('Managed by', idn.managedBy) +
     field('Notes', idn.notes) + field('SID', idn.sid);

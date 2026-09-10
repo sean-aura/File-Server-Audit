@@ -146,7 +146,11 @@
     attribute (not the single-DC-only lastLogon attribute), which by design can lag the
     true last logon by up to ~14 days (the default domain replication interval for that
     attribute) - treat it as "roughly this recently", not to-the-day precise, when using
-    it to spot dormant accounts.
+    it to spot dormant accounts. lastLogonTimestamp is also sometimes blank/unpopulated
+    depending on domain history and replication state; WhenChanged (AD's general
+    last-modified timestamp, updated on essentially any attribute write, not just
+    logons) is captured alongside it as a more consistently-available fallback signal
+    for "is this account still being touched/maintained".
 
     KNOWN LIMITATION - very long paths (>~248 chars): .NET Framework's classic
     Directory/File APIs used here are subject to MAX_PATH unless the target OS/.NET
@@ -524,6 +528,7 @@ function Get-AdIdentityDetailRow {
         LastLogonTimestampApprox = $null
         AccountExpirationDate    = $null
         WhenCreated              = $null
+        WhenChanged              = $null
         OperatingSystem          = $null
         GroupScope               = $null
         GroupCategory            = $null
@@ -567,6 +572,12 @@ function Get-AdIdentityDetailRow {
             try { if ($de.Properties['employeeID'].Value)        { $row.EmployeeId      = $de.Properties['employeeID'].Value } }         catch { }
             try { if ($de.Properties['operatingSystem'].Value)   { $row.OperatingSystem = $de.Properties['operatingSystem'].Value } }    catch { }
             try { if ($de.Properties['whenCreated'].Value)       { $row.WhenCreated     = [datetime]$de.Properties['whenCreated'].Value } } catch { }
+            # whenChanged updates on essentially any attribute write (password changes,
+            # group membership changes, admin edits, etc., not just logons) and is far
+            # more consistently populated across AD environments than
+            # lastLogonTimestamp -- useful as a "this account is still active/maintained"
+            # signal even when the logon timestamp itself is blank or stale.
+            try { if ($de.Properties['whenChanged'].Value)       { $row.WhenChanged     = [datetime]$de.Properties['whenChanged'].Value } } catch { }
             try {
                 if ($de.Properties['lastLogonTimestamp'].Value) {
                     $row.LastLogonTimestampApprox = Convert-AdLargeInteger -LargeInt $de.Properties['lastLogonTimestamp'].Value
@@ -594,6 +605,7 @@ function Get-AdIdentityDetailRow {
                 if ($managedByDn) { $row.ManagedBy = Resolve-ManagerName -DistinguishedName $managedByDn }
             } catch { }
             try { if ($de.Properties['whenCreated'].Value) { $row.WhenCreated = [datetime]$de.Properties['whenCreated'].Value } } catch { }
+            try { if ($de.Properties['whenChanged'].Value) { $row.WhenChanged = [datetime]$de.Properties['whenChanged'].Value } } catch { }
         }
     }
 

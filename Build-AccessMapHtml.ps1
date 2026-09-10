@@ -229,6 +229,7 @@ function Get-OrAdd-Identity {
         pwdSet    = if ($detail) { $detail.PasswordLastSet } else { $null }
         expires   = if ($detail) { $detail.AccountExpirationDate } else { $null }
         created   = if ($detail) { $detail.WhenCreated } else { $null }
+        changed   = if ($detail) { $detail.WhenChanged } else { $null }
         groupScope    = if ($detail) { $detail.GroupScope } else { $null }
         memberCount   = if ($detail) { $detail.DirectMemberCount } else { $null }
         managedBy     = if ($detail) { $detail.ManagedBy } else { $null }
