@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>File Server Access Map</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1a1f26; --panel2: #20262f; --border: #2c333d;
+    --text: #e6e9ee; --muted: #9aa4b2; --accent: #4da3ff; --warn: #ffb454; --bad: #ff5d5d;
+    --good: #57d38c;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); }
+  #app { display:flex; flex-direction:column; height:100vh; }
+  header { padding:10px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; background:var(--panel); flex-shrink:0; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .stats { font-size:12px; color:var(--muted); }
+  header .quickfilters { margin-left:auto; display:flex; gap:8px; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:6px 10px; cursor:pointer; font-size:12px; }
+  button:hover { background:#28303b; }
+  button.warnbtn { border-color:var(--warn); color:var(--warn); }
+  button.badbtn { border-color:var(--bad); color:var(--bad); }
+  #main { flex:1; display:flex; min-height:0; }
+  #sidebar { width:320px; flex-shrink:0; border-right:1px solid var(--border); display:flex; flex-direction:column; background:var(--panel); }
+  #sidebar .tabs { display:flex; border-bottom:1px solid var(--border); }
+  #sidebar .tabs button { flex:1; border:none; border-radius:0; background:transparent; padding:10px; }
+  #sidebar .tabs button.active { background:var(--panel2); border-bottom:2px solid var(--accent); }
+  #searchBox { margin:10px; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
+  #listPanel { flex:1; overflow-y:auto; padding:0 6px 10px; }
+  .listItem { padding:8px 10px; border-radius:4px; cursor:pointer; font-size:13px; margin-bottom:2px; }
+  .listItem:hover { background:var(--panel2); }
+  .listItem .sub { color:var(--muted); font-size:11px; }
+  .badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; margin-left:6px; vertical-align:middle; }
+  .badge.disabled { background:var(--bad); color:#fff; }
+  .badge.dormant { background:var(--warn); color:#000; }
+  .badge.locked { background:var(--bad); color:#fff; }
+  .badge.broken { background:var(--warn); color:#000; }
+  .listMore { padding:8px 10px; color:var(--muted); font-size:11px; font-style:italic; }
+  #content { flex:1; overflow-y:auto; padding:16px; min-width:0; }
+  #welcome { color:var(--muted); max-width:600px; }
+  #welcome ul { line-height:1.8; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:14px 16px; margin-bottom:16px; }
+  .card h2 { margin:0 0 10px; font-size:15px; }
+  .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
+  .card .field b { color:var(--muted); font-weight:500; }
+  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
+  .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
+  svg.graph { width:100%; height:520px; display:block; }
+  svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; }
+  svg.graph .nodeCircle { cursor:pointer; stroke:#000; stroke-width:1; }
+  svg.graph .centerCircle { fill:#ffb454; }
+  svg.graph .edgeLabel { fill:var(--muted); font-size:9px; }
+  table.datatable { width:100%; border-collapse:collapse; font-size:12px; }
+  table.datatable th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); cursor:pointer; color:var(--muted); position:sticky; top:0; background:var(--panel); user-select:none; }
+  table.datatable th:hover { color:var(--text); }
+  table.datatable td { padding:5px 8px; border-bottom:1px solid #22272e; }
+  table.datatable tr.rowclick { cursor:pointer; }
+  table.datatable tr.rowclick:hover td { background:var(--panel2); }
+  .tableToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .tableToolbar input { flex:1; padding:6px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
+  .pill { padding:2px 6px; border-radius:3px; font-size:10px; }
+  .pill.inherited { background:#2c333d; color:var(--muted); }
+  .pill.explicit { background:#2c4a3d; color:var(--good); }
+  .pill.deny { background:var(--bad); color:#fff; }
+  #backBtn:disabled { opacity:0.4; cursor:default; }
+  footer { padding:6px 16px; font-size:11px; color:var(--muted); border-top:1px solid var(--border); flex-shrink:0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>File Server Access Map</h1>
+    <button id="backBtn" disabled>&larr; Back</button>
+    <div class="stats" id="statsLine"></div>
+    <div class="quickfilters">
+      <button id="btnBroken" class="warnbtn">Broken inheritance folders</button>
+      <button id="btnDormant" class="badbtn">Disabled / dormant identities</button>
+    </div>
+  </header>
+  <div id="main">
+    <div id="sidebar">
+      <div class="tabs">
+        <button id="tabIdentities" class="active">Identities</button>
+        <button id="tabFolders">Folders</button>
+      </div>
+      <input id="searchBox" type="text" placeholder="Search...">
+      <div id="listPanel"></div>
+    </div>
+    <div id="content">
+      <div id="welcome"></div>
+    </div>
+  </div>
+  <footer id="footerLine"></footer>
+</div>
+
+<script>
+'use strict';
+
+/* ---------------------------------------------------------------------------
+   Embedded data. Build-AccessMapHtml.ps1 replaces the literal below with the
+   real JSON payload (identities/folders/edges) at generation time, so this
+   file is fully self-contained -- no fetch(), no external files, works from
+   file:// with no server.
+--------------------------------------------------------------------------- */
+const DATA = /*__ACCESS_MAP_DATA__*/null;
+const MAX_EDGES_PER_NODE = __MAX_EDGES_PER_NODE__;
+
+const RIGHTS_LABELS = ['Full Control', 'Modify', 'Read & Execute', 'Read', 'Write', 'Special'];
+// Higher = more "interesting" to show first when a node has more neighbors
+// than MAX_EDGES_PER_NODE. Explicit (non-inherited) always outweighs rights level.
+const RIGHTS_WEIGHT = [100, 90, 50, 10, 60, 85];
+const EDGE_COLORS   = ['#ff5d5d', '#ffb454', '#57d3d3', '#7d8a99', '#4da3ff', '#c084fc'];
+
+const TYPE_COLORS = {
+  User: '#4da3ff', Group: '#c084fc', Computer: '#7d8a99',
+  'Well-known / Local': '#5a6472', Unresolved: '#5a6472'
+};
+
+const DORMANT_DAYS = 90;
+
+let state = {
+  tab: 'identities',
+  search: '',
+  selected: null,      // { kind: 'identity'|'folder', idx: N }
+  history: [],
+  tableSort: { col: null, dir: 1 },
+  tableFilter: ''
+};
+
+/* ------------------------------- Precompute ------------------------------- */
+
+const byIdentity = new Map();  // idx -> [edgeIdx,...]
+const byFolder = new Map();    // idx -> [edgeIdx,...]
+
+function precompute() {
+  DATA.edges.forEach((e, ei) => {
+    const folderIdx = e[0], identityIdx = e[1];
+    if (!byIdentity.has(identityIdx)) byIdentity.set(identityIdx, []);
+    byIdentity.get(identityIdx).push(ei);
+    if (!byFolder.has(folderIdx)) byFolder.set(folderIdx, []);
+    byFolder.get(folderIdx).push(ei);
+  });
+
+  // Per-folder broken-inheritance flag (edge index 4), OR'd across its edges.
+  DATA.folders.forEach((f, fi) => { f.broken = false; });
+  DATA.edges.forEach(e => { if (e[4]) DATA.folders[e[0]].broken = true; });
+
+  // Per-identity disabled/dormant/locked flags, precomputed once.
+  const now = new Date();
+  DATA.identities.forEach(idn => {
+    idn.flagDisabled = (idn.enabled === false);
+    idn.flagLocked = (idn.locked === true);
+    idn.flagDormant = false;
+    if (idn.lastLogon) {
+      const d = new Date(idn.lastLogon);
+      if (!isNaN(d.getTime())) {
+        const days = (now - d) / (1000 * 60 * 60 * 24);
+        if (days > DORMANT_DAYS) idn.flagDormant = true;
+      }
+    }
+  });
+}
+
+function edgeScore(e) {
+  const inherited = e[3] ? 0 : 1;
+  return inherited * 1000 + RIGHTS_WEIGHT[e[2]];
+}
+
+/* --------------------------------- Helpers -------------------------------- */
+
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtBool(b) { return b === true ? 'Yes' : (b === false ? 'No' : ''); }
+function truncateLabel(s, n) { if (!s) return ''; return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
+
+function downloadCsv(filename, rows, columns) {
+  const header = columns.map(c => c.label).join(',');
+  const lines = rows.map(r => columns.map(c => {
+    let v = c.get(r);
+    if (v === null || v === undefined) v = '';
+    v = String(v).replace(/"/g, '""');
+    return /[",\n]/.test(v) ? '"' + v + '"' : v;
+  }).join(','));
+  const csv = [header].concat(lines).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ---------------------------------- Sidebar -------------------------------- */
+
+function renderStats() {
+  const brokenCount = DATA.folders.filter(f => f.broken).length;
+  const dormantCount = DATA.identities.filter(i => i.flagDisabled || i.flagDormant || i.flagLocked).length;
+  document.getElementById('statsLine').textContent =
+    `${DATA.identities.length} identities \u00b7 ${DATA.folders.length} folders \u00b7 ${DATA.edges.length} access entries \u00b7 ` +
+    `${brokenCount} broken-inheritance folder(s) \u00b7 ${dormantCount} disabled/dormant identity(ies)`;
+}
+
+function renderList() {
+  const panel = document.getElementById('listPanel');
+  panel.innerHTML = '';
+  const q = state.search.trim().toLowerCase();
+  const LIMIT = 300;
+
+  if (state.tab === 'identities') {
+    let items = DATA.identities.map((idn, idx) => ({ idn, idx }));
+    if (q) items = items.filter(x => (x.idn.name || '').toLowerCase().includes(q) ||
+                                      (x.idn.dept || '').toLowerCase().includes(q) ||
+                                      (x.idn.title || '').toLowerCase().includes(q));
+    const total = items.length;
+    items = items.slice(0, LIMIT);
+    items.forEach(({ idn, idx }) => {
+      const div = document.createElement('div');
+      div.className = 'listItem';
+      let badges = '';
+      if (idn.flagDisabled) badges += '<span class="badge disabled">disabled</span>';
+      if (idn.flagLocked) badges += '<span class="badge locked">locked</span>';
+      if (idn.flagDormant && !idn.flagDisabled) badges += '<span class="badge dormant">dormant</span>';
+      div.innerHTML = `<div>${esc(idn.name || '(unknown)')}${badges}</div><div class="sub">${esc(idn.type || '')}${idn.title ? ' \u00b7 ' + esc(idn.title) : ''}</div>`;
+      div.onclick = () => selectIdentity(idx, true);
+      panel.appendChild(div);
+    });
+    if (total > LIMIT) {
+      const more = document.createElement('div');
+      more.className = 'listMore';
+      more.textContent = `${total - LIMIT} more \u2014 refine your search`;
+      panel.appendChild(more);
+    }
+  } else {
+    let items = DATA.folders.map((f, idx) => ({ f, idx }));
+    if (q) items = items.filter(x => x.f.path.toLowerCase().includes(q));
+    const total = items.length;
+    items = items.slice(0, LIMIT);
+    items.forEach(({ f, idx }) => {
+      const div = document.createElement('div');
+      div.className = 'listItem';
+      const badge = f.broken ? '<span class="badge broken">broken inheritance</span>' : '';
+      div.innerHTML = `<div>${esc(truncateLabel(f.path, 60))}${badge}</div>`;
+      div.title = f.path;
+      div.onclick = () => selectFolder(idx, true);
+      panel.appendChild(div);
+    });
+    if (total > LIMIT) {
+      const more = document.createElement('div');
+      more.className = 'listMore';
+      more.textContent = `${total - LIMIT} more \u2014 refine your search`;
+      panel.appendChild(more);
+    }
+  }
+}
+
+function setTab(tab) {
+  state.tab = tab;
+  document.getElementById('tabIdentities').className = tab === 'identities' ? 'active' : '';
+  document.getElementById('tabFolders').className = tab === 'folders' ? 'active' : '';
+  renderList();
+}
+
+/* ----------------------------- Selection / nav ----------------------------- */
+
+function pushHistory() {
+  if (state.selected) state.history.push(state.selected);
+  document.getElementById('backBtn').disabled = state.history.length === 0;
+}
+
+function goBack() {
+  if (state.history.length === 0) return;
+  const prev = state.history.pop();
+  document.getElementById('backBtn').disabled = state.history.length === 0;
+  if (prev.kind === 'identity') renderIdentity(prev.idx); else renderFolder(prev.idx);
+  state.selected = prev;
+}
+
+function selectIdentity(idx, recordHistory) {
+  if (recordHistory) pushHistory();
+  state.selected = { kind: 'identity', idx };
+  state.tableSort = { col: null, dir: 1 };
+  state.tableFilter = '';
+  setTab('identities');
+  renderIdentity(idx);
+}
+
+function selectFolder(idx, recordHistory) {
+  if (recordHistory) pushHistory();
+  state.selected = { kind: 'folder', idx };
+  state.tableSort = { col: null, dir: 1 };
+  state.tableFilter = '';
+  setTab('folders');
+  renderFolder(idx);
+}
+
+/* -------------------------------- Radial graph ------------------------------ */
+
+function renderRadialSvg(centerLabel, centerColor, neighbors, onNodeClick) {
+  // neighbors: [{ label, color, edge, sub }], edge = raw edge array for styling
+  const W = 900, H = 520, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 90;
+  const n = neighbors.length;
+  let svg = `<svg class="graph" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+
+  neighbors.forEach((nb, i) => {
+    const angle = (2 * Math.PI * i / Math.max(n, 1)) - Math.PI / 2;
+    const x = cx + R * Math.cos(angle), y = cy + R * Math.sin(angle);
+    const e = nb.edge;
+    const color = EDGE_COLORS[e[2]];
+    const dashed = e[3] ? '5,4' : 'none';
+    const width = e[3] ? 1.5 : 3;
+    svg += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dashed}" opacity="0.85" />`;
+  });
+
+  neighbors.forEach((nb, i) => {
+    const angle = (2 * Math.PI * i / Math.max(n, 1)) - Math.PI / 2;
+    const x = cx + R * Math.cos(angle), y = cy + R * Math.sin(angle);
+    const e = nb.edge;
+    const label = truncateLabel(nb.label, 22);
+    const midx = cx + (R * 0.55) * Math.cos(angle), midy = cy + (R * 0.55) * Math.sin(angle);
+    let edgeLabel = RIGHTS_LABELS[e[2]];
+    if (e[5]) edgeLabel = 'Deny ' + edgeLabel;
+    svg += `<text class="edgeLabel" x="${midx}" y="${midy}" text-anchor="middle">${esc(edgeLabel)}</text>`;
+    svg += `<circle class="nodeCircle" data-i="${i}" cx="${x}" cy="${y}" r="16" fill="${nb.color}" />`;
+    if (e[4]) svg += `<circle cx="${x + 12}" cy="${y - 12}" r="5" fill="#ffb454" stroke="#000" stroke-width="0.5" />`;
+    svg += `<text x="${x}" y="${y + 30}" text-anchor="middle">${esc(label)}</text>`;
+    if (nb.sub) svg += `<text x="${x}" y="${y + 43}" text-anchor="middle" fill="#9aa4b2" font-size="9">${esc(truncateLabel(nb.sub,24))}</text>`;
+  });
+
+  svg += `<circle class="nodeCircle centerCircle" cx="${cx}" cy="${cy}" r="26" />`;
+  svg += `<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-weight="600">${esc(truncateLabel(centerLabel, 26))}</text>`;
+
+  svg += `</svg>`;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'graphWrap';
+  wrap.innerHTML = svg;
+  wrap.querySelectorAll('.nodeCircle[data-i]').forEach(el => {
+    const i = parseInt(el.getAttribute('data-i'), 10);
+    el.addEventListener('click', () => onNodeClick(neighbors[i]));
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    t.textContent = neighbors[i].label;
+    el.appendChild(t);
+  });
+  return wrap;
+}
+
+/* --------------------------------- Sortable table ---------------------------- */
+
+function renderTable(rows, columns, opts) {
+  // columns: [{ key, label, get(row), sortable }]
+  const container = document.createElement('div');
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'tableToolbar';
+  const filterInput = document.createElement('input');
+  filterInput.placeholder = 'Filter this table...';
+  filterInput.value = state.tableFilter;
+  filterInput.oninput = (e) => { state.tableFilter = e.target.value; opts.rerender(); };
+  toolbar.appendChild(filterInput);
+  const exportBtn = document.createElement('button');
+  exportBtn.textContent = `Export ${rows.length} row(s) as CSV`;
+  exportBtn.onclick = () => downloadCsv(opts.filename, rows, columns.map(c => ({ label: c.label, get: c.get })));
+  toolbar.appendChild(exportBtn);
+  container.appendChild(toolbar);
+
+  let filtered = rows;
+  const q = state.tableFilter.trim().toLowerCase();
+  if (q) {
+    filtered = rows.filter(r => columns.some(c => String(c.get(r) || '').toLowerCase().includes(q)));
+  }
+
+  if (state.tableSort.col) {
+    const col = columns.find(c => c.key === state.tableSort.col);
+    if (col) {
+      filtered = filtered.slice().sort((a, b) => {
+        const va = col.get(a), vb = col.get(b);
+        if (va < vb) return -1 * state.tableSort.dir;
+        if (va > vb) return 1 * state.tableSort.dir;
+        return 0;
+      });
+    }
+  }
+
+  const table = document.createElement('table');
+  table.className = 'datatable';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  columns.forEach(c => {
+    const th = document.createElement('th');
+    let arrow = '';
+    if (state.tableSort.col === c.key) arrow = state.tableSort.dir === 1 ? ' \u25b2' : ' \u25bc';
+    th.textContent = c.label + arrow;
+    th.onclick = () => {
+      if (state.tableSort.col === c.key) state.tableSort.dir *= -1;
+      else state.tableSort = { col: c.key, dir: 1 };
+      opts.rerender();
+    };
+    trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  const RENDER_LIMIT = 2000;
+  filtered.slice(0, RENDER_LIMIT).forEach(r => {
+    const tr = document.createElement('tr');
+    if (opts.onRowClick) { tr.className = 'rowclick'; tr.onclick = () => opts.onRowClick(r); }
+    columns.forEach(c => {
+      const td = document.createElement('td');
+      if (c.html) td.innerHTML = c.html(r); else td.textContent = c.get(r);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  container.appendChild(table);
+
+  if (filtered.length > RENDER_LIMIT) {
+    const note = document.createElement('div');
+    note.className = 'graphNote';
+    note.textContent = `Showing first ${RENDER_LIMIT} of ${filtered.length} filtered rows. Narrow the filter, or use Export to get all of them.`;
+    container.appendChild(note);
+  }
+
+  return container;
+}
+
+/* ------------------------------- Identity view ------------------------------ */
+
+function identityInfoCard(idn) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  const flags = [];
+  if (idn.flagDisabled) flags.push('<span class="badge disabled">Disabled</span>');
+  if (idn.flagLocked) flags.push('<span class="badge locked">Locked out</span>');
+  if (idn.flagDormant) flags.push('<span class="badge dormant">No logon in ' + DORMANT_DAYS + '+ days</span>');
+  const field = (label, val) => val ? `<span class="field"><b>${esc(label)}:</b> ${esc(val)}</span>` : '';
+  div.innerHTML =
+    `<h2>${esc(idn.name || '(unknown)')} <span style="font-weight:400;color:var(--muted);font-size:12px;">${esc(idn.type||'')}</span> ${flags.join(' ')}</h2>` +
+    field('Title', idn.title) + field('Department', idn.dept) + field('Manager', idn.manager) +
+    field('Email', idn.email) + field('Last logon (approx.)', idn.lastLogon) + field('Password last set', idn.pwdSet) +
+    field('Account expires', idn.expires) + field('Created', idn.created) +
+    field('Group scope', idn.groupScope) + field('Direct member count', idn.memberCount) + field('Managed by', idn.managedBy) +
+    field('Notes', idn.notes) + field('SID', idn.sid);
+  return div;
+}
+
+function renderIdentity(idx) {
+  const idn = DATA.identities[idx];
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+  content.appendChild(identityInfoCard(idn));
+
+  const edgeIdxs = byIdentity.get(idx) || [];
+  const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
+  const capped = allRows.slice().sort((a, b) => edgeScore(b.e) - edgeScore(a.e)).slice(0, MAX_EDGES_PER_NODE);
+
+  const neighbors = capped.map(r => {
+    const f = DATA.folders[r.e[0]];
+    return { label: f.path, color: f.broken ? '#ffb454' : '#57d3d3', edge: r.e, sub: f.broken ? 'broken inheritance' : '' };
+  });
+
+  const graphWrap = renderRadialSvg(idn.name, TYPE_COLORS[idn.type] || '#4da3ff', neighbors, (nb) => {
+    const f = capped[neighbors.indexOf(nb)];
+    selectFolder(f.e[0], true);
+  });
+  if (allRows.length > MAX_EDGES_PER_NODE) {
+    const note = document.createElement('div');
+    note.className = 'graphNote';
+    note.textContent = `Showing the ${MAX_EDGES_PER_NODE} most notable of ${allRows.length} paths (explicit access and higher rights first). Full list is in the table below.`;
+    graphWrap.appendChild(note);
+  }
+  content.appendChild(graphWrap);
+
+  const columns = [
+    { key: 'path', label: 'Path', get: r => DATA.folders[r.e[0]].path },
+    { key: 'rights', label: 'Rights', get: r => RIGHTS_LABELS[r.e[2]] },
+    { key: 'inherited', label: 'Inherited', get: r => r.e[3] ? 'Yes' : 'No' },
+    { key: 'broken', label: 'Broken inheritance here', get: r => r.e[4] ? 'Yes' : 'No' },
+    { key: 'deny', label: 'Deny', get: r => r.e[5] ? 'Yes' : 'No' },
+    { key: 'via', label: 'Granted via group', get: r => r.e[6] >= 0 ? DATA.identities[r.e[6]].name : '' }
+  ];
+  const tableHost = document.createElement('div');
+  const rerenderTable = () => {
+    tableHost.innerHTML = '';
+    tableHost.appendChild(renderTable(allRows, columns, {
+      filename: `access_${(idn.name||'identity').replace(/[^a-z0-9]+/gi,'_')}.csv`,
+      rerender: rerenderTable,
+      onRowClick: (r) => selectFolder(r.e[0], true)
+    }));
+  };
+  rerenderTable();
+  content.appendChild(tableHost);
+}
+
+/* -------------------------------- Folder view -------------------------------- */
+
+function folderInfoCard(f) {
+  const div = document.createElement('div');
+  div.className = 'card';
+  div.innerHTML = `<h2>${esc(f.path)} ${f.broken ? '<span class="badge broken">Inheritance broken here</span>' : ''}</h2>`;
+  return div;
+}
+
+function renderFolder(idx) {
+  const f = DATA.folders[idx];
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+  content.appendChild(folderInfoCard(f));
+
+  const edgeIdxs = byFolder.get(idx) || [];
+  const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
+  const capped = allRows.slice().sort((a, b) => edgeScore(b.e) - edgeScore(a.e)).slice(0, MAX_EDGES_PER_NODE);
+
+  const neighbors = capped.map(r => {
+    const idn = DATA.identities[r.e[1]];
+    let sub = idn.type || '';
+    if (r.e[6] >= 0) sub = 'via ' + DATA.identities[r.e[6]].name;
+    return { label: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', edge: r.e, sub };
+  });
+
+  const graphWrap = renderRadialSvg(truncateLabel(f.path, 26), '#57d3d3', neighbors, (nb) => {
+    const r = capped[neighbors.indexOf(nb)];
+    selectIdentity(r.e[1], true);
+  });
+  if (allRows.length > MAX_EDGES_PER_NODE) {
+    const note = document.createElement('div');
+    note.className = 'graphNote';
+    note.textContent = `Showing the ${MAX_EDGES_PER_NODE} most notable of ${allRows.length} identities (explicit access and higher rights first). Full list is in the table below.`;
+    graphWrap.appendChild(note);
+  }
+  content.appendChild(graphWrap);
+
+  const columns = [
+    { key: 'name', label: 'Identity', get: r => DATA.identities[r.e[1]].name },
+    { key: 'type', label: 'Type', get: r => DATA.identities[r.e[1]].type },
+    { key: 'rights', label: 'Rights', get: r => RIGHTS_LABELS[r.e[2]] },
+    { key: 'inherited', label: 'Inherited', get: r => r.e[3] ? 'Yes' : 'No' },
+    { key: 'deny', label: 'Deny', get: r => r.e[5] ? 'Yes' : 'No' },
+    { key: 'via', label: 'Granted via group', get: r => r.e[6] >= 0 ? DATA.identities[r.e[6]].name : '' },
+    { key: 'enabled', label: 'Enabled', get: r => fmtBool(DATA.identities[r.e[1]].enabled) }
+  ];
+  const tableHost = document.createElement('div');
+  const rerenderTable = () => {
+    tableHost.innerHTML = '';
+    tableHost.appendChild(renderTable(allRows, columns, {
+      filename: `access_${f.path.replace(/[^a-z0-9]+/gi,'_')}.csv`,
+      rerender: rerenderTable,
+      onRowClick: (r) => selectIdentity(r.e[1], true)
+    }));
+  };
+  rerenderTable();
+  content.appendChild(tableHost);
+}
+
+/* -------------------------------- Quick filters ------------------------------ */
+
+function showWelcome() {
+  const content = document.getElementById('content');
+  const brokenCount = DATA.folders.filter(f => f.broken).length;
+  const dormantCount = DATA.identities.filter(i => i.flagDisabled || i.flagDormant || i.flagLocked).length;
+  content.innerHTML = `<div id="welcome">
+    <p>Select an identity or folder on the left to see its access map, or use the quick filters above.</p>
+    <ul>
+      <li><b>${brokenCount}</b> folder(s) have broken inheritance (their own explicit ACL, not inherited from the parent).</li>
+      <li><b>${dormantCount}</b> identity(ies) are disabled, locked out, or have had no logon in ${DORMANT_DAYS}+ days.</li>
+    </ul>
+    <p>Click a node in a graph to jump to it; use Back to return to where you were.</p>
+  </div>`;
+}
+
+function filterToBrokenFolders() {
+  setTab('folders');
+  document.getElementById('searchBox').value = '';
+  state.search = '';
+  const panel = document.getElementById('listPanel');
+  panel.innerHTML = '';
+  const items = DATA.folders.map((f, idx) => ({ f, idx })).filter(x => x.f.broken);
+  items.forEach(({ f, idx }) => {
+    const div = document.createElement('div');
+    div.className = 'listItem';
+    div.innerHTML = `<div>${esc(truncateLabel(f.path, 60))}<span class="badge broken">broken inheritance</span></div>`;
+    div.title = f.path;
+    div.onclick = () => selectFolder(idx, true);
+    panel.appendChild(div);
+  });
+  if (items.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'listMore';
+    none.textContent = 'None found.';
+    panel.appendChild(none);
+  }
+}
+
+function filterToDormantIdentities() {
+  setTab('identities');
+  document.getElementById('searchBox').value = '';
+  state.search = '';
+  const panel = document.getElementById('listPanel');
+  panel.innerHTML = '';
+  const items = DATA.identities.map((idn, idx) => ({ idn, idx })).filter(x => x.idn.flagDisabled || x.idn.flagDormant || x.idn.flagLocked);
+  items.forEach(({ idn, idx }) => {
+    const div = document.createElement('div');
+    div.className = 'listItem';
+    let badges = '';
+    if (idn.flagDisabled) badges += '<span class="badge disabled">disabled</span>';
+    if (idn.flagLocked) badges += '<span class="badge locked">locked</span>';
+    if (idn.flagDormant && !idn.flagDisabled) badges += '<span class="badge dormant">dormant</span>';
+    div.innerHTML = `<div>${esc(idn.name || '(unknown)')}${badges}</div><div class="sub">${esc(idn.type||'')}${idn.title ? ' \u00b7 ' + esc(idn.title) : ''}</div>`;
+    div.onclick = () => selectIdentity(idx, true);
+    panel.appendChild(div);
+  });
+  if (items.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'listMore';
+    none.textContent = 'None found.';
+    panel.appendChild(none);
+  }
+}
+
+/* ----------------------------------- Init ------------------------------------ */
+
+function init() {
+  precompute();
+  renderStats();
+  showWelcome();
+  renderList();
+
+  document.getElementById('tabIdentities').onclick = () => setTab('identities');
+  document.getElementById('tabFolders').onclick = () => setTab('folders');
+  document.getElementById('searchBox').oninput = (e) => { state.search = e.target.value; renderList(); };
+  document.getElementById('backBtn').onclick = goBack;
+  document.getElementById('btnBroken').onclick = filterToBrokenFolders;
+  document.getElementById('btnDormant').onclick = filterToDormantIdentities;
+
+  document.getElementById('footerLine').textContent =
+    `Generated ${DATA.generatedAt} from ${DATA.sourceFolder} (toolkit v${DATA.toolkitVersion || '?'}) \u2014 point-in-time snapshot, not live data.`;
+}
+
+init();
+</script>
+</body>
+</html>
