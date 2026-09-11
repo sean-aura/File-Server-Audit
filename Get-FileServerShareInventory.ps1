@@ -89,7 +89,7 @@
     enumerates shares on both nodes and walks the whole namespace tree.
 
 .NOTES
-    Version: 0.1.0
+    Version: 0.2.0
 
     Minimum PowerShell 5.1. If you already know the physical paths you care about,
     you can skip this script entirely and pass them straight to
@@ -113,7 +113,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.1.0'
+$ScriptVersion = '0.2.0'
 
 $ErrorActionPreference = 'Stop'
 

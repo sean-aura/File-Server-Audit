@@ -2,9 +2,10 @@
 
 Three scripts for auditing NTFS/share permissions on a DFS-fronted Windows
 file server pair (one active node, one standby), plus a self-contained
-interactive HTML report. PowerShell 5.1 compatible.
+interactive HTML report. Works under both Windows PowerShell 5.1 and
+PowerShell 7+.
 
-Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.2.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -114,7 +115,22 @@ Common variants:
 
 # Verbose: log every folder entered, every ACL read, every identity/group resolved
 .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -Verbose
+
+# Lean output: skip purely-inherited ACEs entirely (both CSVs), keeping only
+# explicit ACLs and each folder's inheritance-broken flag -- recommended when
+# the output will feed Build-AccessMapHtml.ps1's tree view
+.\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -SkipInheritedAces
 ```
+
+`-SkipInheritedAces` matters more than it might look: a plain recursive scan
+records the same inherited ACE on *every* folder down an unbroken inheritance
+chain (a share with 10,000 folders and 5 inherited ACEs each produces ~50,000
+near-duplicate rows). With it on, a folder's absence from the output means
+"unchanged from its parent", and any row means "something explicit is set
+here" -- smaller CSVs, a smaller generated HTML file, and per-folder access
+counts in the tree that actually mean something. (Older scripts using the
+previous parameter name, `-SkipInheritedAcesInFolderReport`, still work --
+it's kept as an alias.)
 
 `-NoRecursion` scans only the given root folder(s) (plus their files, if
 `-IncludeFiles` is also set) -- no subfolders at all. It's equivalent to
@@ -205,53 +221,55 @@ already have into the closest practical equivalent.)
 What it gives you:
 
 - **Search/browse** identities or folders in the left sidebar.
+- **Select a folder**: an info card (inheritance status), a collapsible
+  **folder/subfolder tree** rooted at that folder, and a full sortable table
+  of every identity with access to it (rights, inherited, deny, granted via
+  group) -- click any subfolder in the tree, or any row in the table, to
+  pivot straight there.
 - **Select an identity**: an info card (title, department, manager, enabled/
-  locked/last-logon from `ADIdentityDetails.csv`), a multi-hop relationship
-  graph centered on them, and a full sortable table of every path they can
-  reach (with rights, inherited/broken-here, and which group granted it if
-  any) -- click any row/node to pivot straight to that folder.
-- **Select a folder**: the mirror image -- who has access, via which group,
-  and whether it's inherited.
-- **The graph itself**: centered on your current selection (highlighted),
-  with concentric rings of related nodes fanning outward -- folders,
-  identities, and the group memberships connecting them (so you can see not
-  just "who has access to this folder" but "who else shares access via the
-  same group" and "what else does that group reach"). It's fully
-  interactive:
-  - **Depth control** (2 / 3 / 4 / 5 / Full): how many hops to expand from
-    the center. Defaults to 2 to keep the first view uncluttered; push it
-    out when you want to trace a longer chain.
-  - **Zoom**: mouse wheel (zooms toward the cursor), or the +/-/reset
-    buttons in the toolbar.
-  - **Pan**: click-drag empty space in the graph.
-  - **Drag individual nodes**: click-drag any node to reposition it (its
-    connected lines follow) -- useful for untangling a busy cluster by hand.
-  - **Click any node, at any depth, to make it the new center** (it turns
-    yellow, like the current selection always does) -- so you can follow a
-    chain outward (user -> group -> folder -> other group -> ...) without
-    losing your place; **Back** retraces your steps.
-  - **Labels**: folder nodes show `\\server\share` on a small line above the
-    more specific `deepest\sub folder` name below it (truncated from the
-    *front* if long, so the identifying part at the end stays visible);
-    identity nodes show the domain small, name below. Hover any node for
-    the full, untruncated text.
+  locked/last-logon from `ADIdentityDetails.csv`), the **same kind of tree**
+  but with one root per folder that identity directly accesses (so someone
+  with access to three unrelated shares sees three independent trees), and a
+  full sortable table of every path they can reach.
+- **The tree**: this is deliberately a folder/subfolder hierarchy, not a
+  relationship graph -- it mirrors what you'd see in Explorer, with each
+  folder's own children branching from it specifically (a subfolder's
+  children are never pooled with a sibling folder's). This also means
+  there's no way for something unrelated to leak into view the way a
+  general relationship graph could: a tree rooted at (or including) a
+  folder only ever shows what's actually inside that folder.
+  - **Depth control** (1 / 2 / 3 / 4 / 5 / Full): how many *levels of
+    subfolder nesting* to auto-expand. 1 = just the folder itself, nothing
+    expanded. 2 = + its direct subfolders. 3 = + their own subfolders in
+    turn (each still branching from its own parent). Full expands
+    everything found in the data, up to a safety cap on very large trees.
+  - **Manual expand/collapse**: click the \u25b8/\u25be triangle on any folder to
+    expand or collapse it by hand, independent of the depth setting --
+    useful for drilling into one specific branch without expanding
+    everything else too.
+  - **Click a folder's name** (not the triangle) to select it -- updates
+    the info card and table above/below to that folder, and pushes it onto
+    the **Back** history.
+  - Each row shows a small badge with how many access entries that folder
+    has, and a "broken" badge if inheritance is broken there. If the source
+    audit ran without `-SkipInheritedAces`, this count includes inherited
+    ACEs too, so it'll repeat the same number down an unbroken chain --
+    still correct, just less immediately informative than a run with that
+    switch on.
 - **Quick filters**: "Broken inheritance folders" and "Disabled/dormant
   identities" (no logon in 90+ days, or disabled/locked) jump straight to
   the two things a review usually cares about most.
 - **Export to CSV** from any table (respecting whatever you've typed into
   that table's own filter box) via a button -- generated client-side in the
   browser, no server round-trip.
-- A **Back** button to retrace your clicks as you pivot between nodes.
+- A **Back** button to retrace your clicks as you pivot between folders/identities.
 
-Since there's no query engine behind a static file, the graph still caps
-itself to stay readable and responsive: at most `-MaxEdgesPerNode` (default
-60) neighbors are drawn per hop *from any single already-visited node*
-(explicit/non-inherited access and higher rights levels first) -- so one
-"hub" like Everyone or Domain Users can't flood a single hop and crowd out
-everything else -- and at most 600 total nodes across the whole graph
-regardless of depth. When either cap is hit, a note says so; the complete,
-uncapped list for the currently-selected node is always in the sortable
-table below the graph, and is what gets exported.
+Since there's no query engine behind a static file, a folder with more
+subfolders than `-MaxEdgesPerNode` (default 60) shows only that many in the
+tree, with a "+N more" note -- select the folder itself and use the table
+for the complete list. Auto-expansion at "Full" depth also stops after 1,500
+folders on a very large tree, to stay responsive; anything still collapsed
+past that point can still be expanded manually.
 
 For very large audits (hundreds of thousands of rows), the whole dataset is
 embedded as JSON in the one HTML file, which can get large (tens of MB) --
@@ -283,6 +301,22 @@ keep the two files together.
 - **Very long paths (>~248 chars):** the script attempts a `\\?\UNC\` prefix
   fallback, but extremely deep trees may still fail -- these are logged to
   `Errors.log` rather than aborting the whole run.
+- **Output files are timestamped and won't overwrite each other.** Every CSV/
+  log/HTML file name includes the run's timestamp (e.g.
+  `FolderPermissions_20260910_211500.csv`), so re-running into a fixed/shared
+  `-OutputFolder` across multiple runs never silently clobbers a previous
+  run's files -- `Build-AccessMapHtml.ps1` automatically finds the latest run
+  in a folder. If a file with that exact name somehow already exists, all
+  three scripts error rather than overwrite; pass `-Force` if you actually
+  want to.
+- **Works under PowerShell 5.1 and PowerShell 7+.** The ACL-reading code path
+  differs internally between the two (a .NET Framework vs .NET Core API
+  difference), handled automatically -- no action needed on your part.
+- **`ADIdentityDetails.csv`'s last-logon column can be blank or stale.**
+  `LastLogonTimestampApprox` depends on domain replication and history and
+  isn't always populated; `WhenChanged` (AD's general last-modified
+  timestamp, updated on nearly any attribute write, not just logons) is
+  captured alongside it as a more consistently-available fallback signal.
 - **DFS access levels, summarized:**
   - Browsing a DFS path and resolving it to its physical target (`-DfsPath`):
     needs only ordinary read access to the path. No RSAT, no DFS admin rights.

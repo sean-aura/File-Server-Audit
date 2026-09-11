@@ -44,24 +44,24 @@
   .card h2 { margin:0 0 10px; font-size:15px; }
   .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
   .card .field b { color:var(--muted); font-weight:500; }
-  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
-  .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; }
-  .graphToolbar .group { display:flex; align-items:center; gap:4px; }
-  .graphToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
+  .treeWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
+  .treeToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:6px; }
+  .treeToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
   .depthBtn { padding:4px 9px; font-size:11px; }
   .depthBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
-  .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
-  svg.graph { width:100%; height:560px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
-  svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; pointer-events:none; }
-  svg.graph .nodeGroup { cursor:grab; }
-  svg.graph .nodeGroup:active { cursor:grabbing; }
-  svg.graph .nodeCircle { stroke:#000; stroke-width:1; }
-  svg.graph .centerCircle { fill:#ffb454; }
-  svg.graph .labelLine1 { fill:var(--muted); font-size:9px; }
-  svg.graph .labelLine2 { font-weight:500; }
-  svg.graph .edgeLabel { fill:var(--muted); font-size:9px; }
-  svg.graph .flagRing { pointer-events:none; }
+  .treeNote { font-size:11px; color:var(--muted); padding:4px 8px; }
+  .treeHost { max-height:520px; overflow-y:auto; padding:4px 6px; }
+  .treeNode { }
+  .treeRow { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:4px; cursor:pointer; font-size:13px; }
+  .treeRow:hover { background:var(--panel2); }
+  .treeRow.selected { background:#20304a; outline:1px solid var(--accent); }
+  .treeToggle { display:inline-block; width:14px; text-align:center; color:var(--muted); flex-shrink:0; }
+  .treeToggle.hasChildren { cursor:pointer; }
+  .treeToggle.hasChildren:hover { color:var(--text); }
+  .treeLabel { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .treeCount { font-size:10px; color:var(--muted); background:var(--panel2); border-radius:8px; padding:1px 7px; flex-shrink:0; }
+  .treeChildren { margin-left:20px; padding-left:10px; border-left:1px solid var(--border); }
+  .treeMore { font-size:11px; color:var(--muted); font-style:italic; padding:3px 6px 3px 26px; }
   table.datatable { width:100%; border-collapse:collapse; font-size:12px; }
   table.datatable th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); cursor:pointer; color:var(--muted); position:sticky; top:0; background:var(--panel); user-select:none; }
   table.datatable th:hover { color:var(--text); }
@@ -129,8 +129,8 @@ const TYPE_COLORS = {
 };
 
 const DORMANT_DAYS = 90;
-const RING_SPACING = 130;
-const DEPTH_CAP = 600; // safety cap on total nodes drawn in the graph, regardless of depth setting
+const TREE_CHILD_CAP = MAX_EDGES_PER_NODE; // max children shown per folder before "+N more"
+const TREE_AUTO_EXPAND_CAP = 1500;         // safety cap on total nodes auto-expanded (Full depth), regardless of tree size
 
 let state = {
   tab: 'identities',
@@ -139,202 +139,58 @@ let state = {
   history: [],
   tableSort: { col: null, dir: 1 },
   tableFilter: '',
-  depth: 1             // graph expansion depth: 1/2/3/4/5/Infinity ("Full") -- 1 = direct relationships only
+  depth: 1             // tree auto-expand depth: 1/2/3/4/5/Infinity ("Full") -- 1 = just the
+                        // folder itself, no subfolders shown yet; 2 = + its direct subfolders;
+                        // 3 = + their own subfolders in turn; etc. Each subfolder's own children
+                        // branch from it specifically -- never pooled with a sibling's.
 };
 
 /* ------------------------------- Precompute ------------------------------- */
 
 const byIdentity = new Map();  // idx -> [edgeIdx,...]
 const byFolder = new Map();    // idx -> [edgeIdx,...]
-let adjacency = new Map();     // 'f:N'|'i:N' -> Map<neighborKey, {edges:[{type,e,ei}]}> -- built in precompute()
+const folderPathToIdx = new Map(); // path string -> folder idx
+const folderChildren = new Map();  // parentIdx -> [childIdx,...], sorted, built in precompute()
+const folderParent = new Map();    // childIdx -> parentIdx
 
-function buildAdjacency() {
-  const adj = new Map();
-  function ensure(key) { if (!adj.has(key)) adj.set(key, new Map()); return adj.get(key); }
-  function link(k1, k2, edgeDescr) {
-    const m1 = ensure(k1), m2 = ensure(k2);
-    if (!m1.has(k2)) m1.set(k2, { edges: [] });
-    if (!m2.has(k1)) m2.set(k1, { edges: [] });
-    m1.get(k2).edges.push(edgeDescr);
-    m2.get(k1).edges.push(edgeDescr);
-  }
-  // Two kinds of relationship become graph edges: the folder<->identity access
-  // ACE itself, and (when the ACE was granted via a group) an identity<->group
-  // membership edge -- so multi-hop expansion can step across "who else is in
-  // this group" and "what else does this group's access apply to", not just
-  // one folder's direct ACL.
-  DATA.edges.forEach((e, ei) => {
-    const fKey = 'f:' + e[0], iKey = 'i:' + e[1];
-    link(fKey, iKey, { type: 'access', e, ei });
-    if (e[6] >= 0) link(iKey, 'i:' + e[6], { type: 'membership', e, ei });
+function buildFolderTree() {
+  // Parent/child relationships are derived purely from path strings -- a folder
+  // is another folder's direct child if its path is exactly one segment longer
+  // and starts with the parent's path. This only connects folders that are
+  // BOTH actually present in the scanned data (e.g. if the audit didn't walk
+  // an intermediate folder, the chain breaks there rather than guessing).
+  DATA.folders.forEach((f, idx) => folderPathToIdx.set(f.path, idx));
+  DATA.folders.forEach((f, idx) => {
+    const segs = f.path.split('\\').filter(Boolean);
+    if (segs.length <= 2) return; // \\server\share -- a share root has no parent in our data
+    const parentPath = '\\\\' + segs.slice(0, -1).join('\\');
+    const parentIdx = folderPathToIdx.get(parentPath);
+    if (parentIdx !== undefined) {
+      if (!folderChildren.has(parentIdx)) folderChildren.set(parentIdx, []);
+      folderChildren.get(parentIdx).push(idx);
+      folderParent.set(idx, parentIdx);
+    }
   });
-  return adj;
+  folderChildren.forEach(list => list.sort((a, b) => DATA.folders[a].path.localeCompare(DATA.folders[b].path)));
 }
 
-function bestEdgeScore(edgeInfo) {
-  // Same "explicit + higher rights first" priority used elsewhere, so the
-  // most notable relationship wins when multiple edges connect the same pair
-  // or when a hop has more candidates than the per-source/overall cap allows.
-  let best = -1;
-  edgeInfo.edges.forEach(d => {
-    const s = d.type === 'membership' ? 40 : ((d.e[3] ? 0 : 1000) + RIGHTS_WEIGHT[d.e[2]]);
-    if (s > best) best = s;
+function computeTopmostRoots(candidateIndices) {
+  // Given a set of folders an identity has a direct edge to, a normal
+  // recursive audit typically records an ACE row for EVERY folder in a
+  // branch (inherited ACEs get captured per-folder) -- so without this, a
+  // parent folder and several of its own descendants would each show up as
+  // their own separate, duplicated top-level tree root. Keep only the
+  // topmost folder per branch; everything beneath it is already reachable
+  // by expanding that one root.
+  const candidateSet = new Set(candidateIndices);
+  return candidateIndices.filter(idx => {
+    let p = folderParent.get(idx);
+    while (p !== undefined) {
+      if (candidateSet.has(p)) return false; // an ancestor is also a candidate -- not topmost
+      p = folderParent.get(p);
+    }
+    return true;
   });
-  return best;
-}
-
-const HUB_DEGREE_THRESHOLD = 15;
-
-function isExpandable(key, isCenter) {
-  // Gates what a node reveals when the BFS steps OUT of it (not whether it
-  // appears at all -- it's always added as a neighbor of whatever DID reveal
-  // it). The center is always fully expanded, whatever type it is -- that's
-  // the whole point of clicking a node to make it the new root. Beyond that:
-  //   - Folders: always fully expandable (that's the core "who has access" view).
-  //   - Unresolved / Well-known (Everyone, SYSTEM, etc.), not centered:
-  //     'none' -- these are frequently the biggest accidental hubs of all
-  //     (a stale orphaned SID left on hundreds of ACLs, or a default group
-  //     that's on nearly everything), and rarely carry any real signal
-  //     about "what else is related to this" once you already know they're
-  //     just Everyone or a leftover SID.
-  //   - Groups (not centered): 'membershipOnly' -- reveal who else is in the
-  //     group, but NOT the group's own access to other, unrelated folders.
-  //     Groups are commonly used for broad, reusable access grants, so
-  //     without this a single shared group turns into a hub that bridges
-  //     two otherwise-unrelated parts of the tree into one tangled view.
-  //   - Users (not centered): 'full' UNLESS their total fan-out across the
-  //     whole scan (their degree in byIdentity) exceeds HUB_DEGREE_THRESHOLD,
-  //     in which case 'membershipOnly', same as a Group. A named User's
-  //     personal footprint is usually small and worth tracing laterally --
-  //     but built-in/admin/service accounts (Administrator, svc-backup,
-  //     etc.) routinely have ACEs across huge swathes of a server and are
-  //     just as hub-like as a broadly-permissioned Group; gating purely by
-  //     "is this a Group" missed exactly that case (a User-typed account
-  //     with 100+ folders showed up as a second hub bridging unrelated
-  //     parts of the tree together, the same problem groups had before).
-  if (isCenter) return 'full';
-  if (key[0] === 'f') return 'full';
-  const idx = parseInt(key.slice(2), 10);
-  const idn = DATA.identities[idx];
-  if (idn.type === 'Unresolved' || idn.type === 'Well-known / Local') return 'none';
-  if (idn.type === 'Group') return 'membershipOnly';
-  const degree = (byIdentity.get(idx) || []).length;
-  if (degree > HUB_DEGREE_THRESHOLD) return 'membershipOnly';
-  return 'full';
-}
-
-function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
-  // Breadth-first expansion from centerKey up to `depth` hops (Infinity for
-  // "Full"), capped overall at `cap` total nodes and, per hop, at
-  // `perSourceCap` neighbors contributed by any single already-visited node.
-  // isExpandable() above additionally prevents hub-type nodes (groups,
-  // unresolved SIDs, well-known accounts) from being walked OUT of unless
-  // they're the actual selected center -- see its comment for why.
-  const visited = new Map();   // key -> { hop, from, edgeInfo }
-  visited.set(centerKey, { hop: 0, from: null });
-  let frontier = [centerKey];
-  const layers = [[centerKey]];
-  let truncated = false;
-
-  for (let hop = 1; hop <= depth && visited.size < cap; hop++) {
-    const candidates = [];
-    frontier.forEach(fKey => {
-      const mode = isExpandable(fKey, fKey === centerKey);
-      if (mode === 'none') return;
-      const nbrs = adjacency.get(fKey) || new Map();
-      const fromThisSource = [];
-      nbrs.forEach((edgeInfo, nKey) => {
-        if (visited.has(nKey)) return;
-        if (mode === 'membershipOnly' && !edgeInfo.edges.some(d => d.type === 'membership')) return;
-        fromThisSource.push({ nKey, fromKey: fKey, edgeInfo, score: bestEdgeScore(edgeInfo) });
-      });
-      fromThisSource.sort((a, b) => b.score - a.score);
-      if (fromThisSource.length > perSourceCap) truncated = true;
-      candidates.push(...fromThisSource.slice(0, perSourceCap));
-    });
-    const bestByKey = new Map();
-    candidates.forEach(c => {
-      const existing = bestByKey.get(c.nKey);
-      if (!existing || c.score > existing.score) bestByKey.set(c.nKey, c);
-    });
-    let sorted = Array.from(bestByKey.values()).sort((a, b) => b.score - a.score);
-    const budget = cap - visited.size;
-    if (sorted.length > budget) truncated = true;
-    sorted = sorted.slice(0, Math.max(0, budget));
-    const nextFrontier = [];
-    sorted.forEach(c => {
-      visited.set(c.nKey, { hop, from: c.fromKey, edgeInfo: c.edgeInfo });
-      nextFrontier.push(c.nKey);
-    });
-    layers.push(nextFrontier);
-    frontier = nextFrontier;
-    if (nextFrontier.length === 0) break;
-  }
-  return { visited, layers, truncated };
-}
-
-function layoutRadial(layers, visited) {
-  // Concentric rings by hop distance; within a ring, nodes are angularly
-  // clustered near their parent's angle (a simple radial-tree heuristic) so
-  // related nodes stay visually grouped instead of scattering randomly.
-  const positions = new Map();
-  positions.set(layers[0][0], { x: 0, y: 0, angle: 0 });
-  for (let hop = 1; hop < layers.length; hop++) {
-    const nodesThisHop = layers[hop];
-    if (nodesThisHop.length === 0) continue;
-    const byParent = new Map();
-    nodesThisHop.forEach(k => {
-      const p = visited.get(k).from;
-      if (!byParent.has(p)) byParent.set(p, []);
-      byParent.get(p).push(k);
-    });
-    const parentKeys = Array.from(byParent.keys()).sort((a, b) =>
-      (positions.get(a) ? positions.get(a).angle : 0) - (positions.get(b) ? positions.get(b).angle : 0));
-    const total = nodesThisHop.length;
-    parentKeys.forEach(p => {
-      const kids = byParent.get(p);
-      const parentAngle = positions.get(p) ? positions.get(p).angle : 0;
-      const arcWidth = (kids.length / total) * 2 * Math.PI;
-      const startAngle = parentAngle - arcWidth / 2;
-      kids.forEach((k, i) => {
-        const angle = kids.length === 1 ? parentAngle : startAngle + (arcWidth * (i + 0.5) / kids.length);
-        positions.set(k, { angle, x: 0, y: 0 });
-      });
-    });
-  }
-  layers.forEach((nodesThisHop, hop) => {
-    const radius = hop * RING_SPACING;
-    nodesThisHop.forEach(k => {
-      const pos = positions.get(k);
-      pos.x = radius * Math.cos(pos.angle - Math.PI / 2);
-      pos.y = radius * Math.sin(pos.angle - Math.PI / 2);
-    });
-  });
-  return positions;
-}
-
-function formatFolderLabel(path) {
-  // \\server\share\deep\sub\folder -> line1 "\\server\share" (context),
-  // line2 the most specific remaining segment(s), truncated from the FRONT
-  // (keeping the tail) when too long, since the deepest folder name is
-  // usually the most identifying part -- not the server/share prefix.
-  const m = path.match(/^\\\\([^\\]+)\\([^\\]+)(\\.*)?$/);
-  if (!m) return { line1: path, line2: '' };
-  const serverShare = '\\\\' + m[1] + '\\' + m[2];
-  let remainder = m[3] ? m[3].replace(/^\\/, '') : '';
-  const MAX_LINE2 = 28;
-  if (remainder.length > MAX_LINE2) remainder = '\u2026' + remainder.slice(-(MAX_LINE2 - 1));
-  return { line1: serverShare, line2: remainder };
-}
-
-function formatIdentityLabel(name) {
-  // DOMAIN\username -> line1 "DOMAIN" (muted/small), line2 "username" (the
-  // actually-identifying part). Falls back to a single line if there's no
-  // domain-style prefix (e.g. "Everyone").
-  if (!name) return { line1: '', line2: '' };
-  const idx = name.indexOf('\\');
-  if (idx === -1) return { line1: '', line2: name };
-  return { line1: name.slice(0, idx), line2: name.slice(idx + 1) };
 }
 
 function precompute() {
@@ -346,7 +202,7 @@ function precompute() {
     byFolder.get(folderIdx).push(ei);
   });
 
-  adjacency = buildAdjacency();
+  buildFolderTree();
 
   // Per-folder broken-inheritance flag (edge index 4), OR'd across its edges.
   DATA.folders.forEach((f, fi) => { f.broken = false; });
@@ -497,279 +353,148 @@ function selectFolder(idx, recordHistory) {
   renderFolder(idx);
 }
 
-/* -------------------------------- Ego-network graph -------------------------- */
+/* -------------------------------- Folder tree view --------------------------- */
 
-function svgEl(tag, attrs) {
-  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  if (attrs) Object.keys(attrs).forEach(k => el.setAttribute(k, attrs[k]));
-  return el;
+function lastPathSegment(path) {
+  const segs = path.split('\\').filter(Boolean);
+  return segs.length ? segs[segs.length - 1] : path;
 }
 
-function nodeDisplayInfo(key) {
-  const kind = key[0], idx = parseInt(key.slice(2), 10);
-  if (kind === 'f') {
-    const f = DATA.folders[idx];
-    const lbl = formatFolderLabel(f.path);
-    return { kind: 'folder', idx, line1: lbl.line1, line2: lbl.line2, full: f.path, color: '#57d3d3', flagged: f.broken };
-  }
-  const idn = DATA.identities[idx];
-  const lbl = formatIdentityLabel(idn.name);
-  return { kind: 'identity', idx, line1: lbl.line1, line2: lbl.line2, full: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', flagged: idn.flagDisabled || idn.flagDormant || idn.flagLocked };
-}
-
-function edgeDisplayInfo(edgeInfo) {
-  // Pick the single best (highest-scoring) underlying edge to represent this
-  // connection visually when more than one exists between the same pair.
-  let best = null, bestScore = -1;
-  edgeInfo.edges.forEach(d => {
-    const s = d.type === 'membership' ? 40 : ((d.e[3] ? 0 : 1000) + RIGHTS_WEIGHT[d.e[2]]);
-    if (s > bestScore) { bestScore = s; best = d; }
-  });
-  if (best.type === 'membership') {
-    return { label: 'Member of', color: '#c084fc', dashed: true, deny: false, broken: false };
-  }
-  const e = best.e;
-  let label = RIGHTS_LABELS[e[2]];
-  if (e[5]) label = 'Deny ' + label;
-  return { label, color: EDGE_COLORS[e[2]], dashed: !!e[3], deny: !!e[5], broken: !!e[4] };
-}
-
-function computeViewBox(positions) {
-  let maxAbs = 60; // minimum half-extent so a single/near-empty graph doesn't over-zoom
-  positions.forEach(p => {
-    maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
-  });
-  const half = maxAbs + 140; // padding for node radius + 2-line label + margin
-  const w = half * 2, h = w * (560 / 900);
-  return { x: -w / 2, y: -h / 2, w, h };
-}
-
-function renderEgoGraph(centerKey, onNavigate) {
-  const perSourceCap = MAX_EDGES_PER_NODE;
-  const depth = state.depth === Infinity ? 999 : state.depth;
-  const g = buildEgoGraph(centerKey, depth, DEPTH_CAP, perSourceCap);
-  const positions = layoutRadial(g.layers, g.visited);
-  const vb = computeViewBox(positions);
-
+function renderFolderNode(folderIdx, level, maxAutoExpandDepth, onSelectFolder, selectedFolderIdx, expandBudget) {
+  // Builds one folder row plus a (possibly lazily-built) container for its
+  // children. Auto-expands up to maxAutoExpandDepth LEVELS deep (level 1 =
+  // this node itself, so maxAutoExpandDepth=1 means "just this folder, no
+  // children shown yet"); every subfolder's own children always branch from
+  // that subfolder specifically, never pooled with a sibling's. Beyond the
+  // auto-expand depth, anything with children can still be expanded manually
+  // by clicking its toggle, regardless of the depth setting.
+  const f = DATA.folders[folderIdx];
   const wrap = document.createElement('div');
-  wrap.className = 'graphWrap';
+  wrap.className = 'treeNode';
 
-  /* ---- Toolbar: depth selector + zoom controls ---- */
+  const row = document.createElement('div');
+  row.className = 'treeRow' + (folderIdx === selectedFolderIdx ? ' selected' : '');
+
+  const allChildren = folderChildren.get(folderIdx) || [];
+  const hasChildren = allChildren.length > 0;
+
+  const toggle = document.createElement('span');
+  toggle.className = 'treeToggle';
+  toggle.textContent = '\u00a0\u00a0';
+  row.appendChild(toggle);
+
+  const label = document.createElement('span');
+  label.className = 'treeLabel';
+  label.textContent = lastPathSegment(f.path);
+  label.title = f.path;
+  row.appendChild(label);
+
+  const edgeCount = (byFolder.get(folderIdx) || []).length;
+  const countBadge = document.createElement('span');
+  countBadge.className = 'treeCount';
+  countBadge.textContent = String(edgeCount);
+  countBadge.title = `${edgeCount} access ${edgeCount === 1 ? 'entry' : 'entries'} on this folder`;
+  row.appendChild(countBadge);
+
+  if (f.broken) {
+    const b = document.createElement('span');
+    b.className = 'badge broken';
+    b.textContent = 'broken';
+    b.title = 'Inheritance is broken here (explicit ACL, not inherited from parent)';
+    row.appendChild(b);
+  }
+
+  row.onclick = () => onSelectFolder(folderIdx);
+  wrap.appendChild(row);
+
+  const childHost = document.createElement('div');
+  childHost.className = 'treeChildren';
+  wrap.appendChild(childHost);
+
+  let expanded = false;
+  let built = false;
+
+  function buildChildren() {
+    if (built) return;
+    built = true;
+    const shown = allChildren.slice(0, TREE_CHILD_CAP);
+    shown.forEach(childIdx => {
+      childHost.appendChild(renderFolderNode(childIdx, level + 1, maxAutoExpandDepth, onSelectFolder, selectedFolderIdx, expandBudget));
+    });
+    if (allChildren.length > TREE_CHILD_CAP) {
+      const more = document.createElement('div');
+      more.className = 'treeMore';
+      more.textContent = `+ ${allChildren.length - TREE_CHILD_CAP} more subfolder(s) not shown here -- select this folder to see everything in the table below.`;
+      childHost.appendChild(more);
+    }
+  }
+
+  function setExpanded(v) {
+    expanded = v;
+    if (expanded) buildChildren();
+    childHost.style.display = expanded ? 'block' : 'none';
+    if (hasChildren) toggle.textContent = expanded ? '\u25be' : '\u25b8';
+  }
+
+  if (hasChildren) {
+    toggle.classList.add('hasChildren');
+    toggle.onclick = (e) => { e.stopPropagation(); setExpanded(!expanded); };
+  }
+
+  const shouldAutoExpand = hasChildren && level < maxAutoExpandDepth && expandBudget.count < TREE_AUTO_EXPAND_CAP;
+  if (shouldAutoExpand) expandBudget.count++;
+  setExpanded(shouldAutoExpand);
+
+  return wrap;
+}
+
+function renderFolderTreeView(rootFolderIndices, onSelectFolder, selectedFolderIdx, onDepthChange) {
+  // rootFolderIndices: one root (folder-centered view) or several (identity-
+  // centered view -- every folder that identity directly accesses, each
+  // getting its own independent tree; nothing here ever reaches OUTSIDE those
+  // specific roots' own subfolder structure, so there is no path for an
+  // unrelated part of the tree to leak in the way a relationship-hop graph
+  // could -- see the depth toolbar's hint text for what depth means here).
+  const wrap = document.createElement('div');
+  wrap.className = 'treeWrap';
+
   const toolbar = document.createElement('div');
-  toolbar.className = 'graphToolbar';
-
-  const depthGroup = document.createElement('div');
-  depthGroup.className = 'group';
+  toolbar.className = 'treeToolbar';
   const depthLabel = document.createElement('span');
   depthLabel.className = 'groupLabel';
   depthLabel.textContent = 'Depth:';
-  depthGroup.appendChild(depthLabel);
+  toolbar.appendChild(depthLabel);
   [1, 2, 3, 4, 5, 'Full'].forEach(d => {
     const btn = document.createElement('button');
     btn.className = 'depthBtn' + ((d === 'Full' ? Infinity : d) === state.depth ? ' active' : '');
     btn.textContent = String(d);
-    btn.onclick = () => { state.depth = (d === 'Full' ? Infinity : d); onNavigate(centerKey, true /* rerenderInPlace */); };
-    depthGroup.appendChild(btn);
+    btn.onclick = () => { state.depth = (d === 'Full' ? Infinity : d); onDepthChange(); };
+    toolbar.appendChild(btn);
   });
-  toolbar.appendChild(depthGroup);
-
-  const zoomGroup = document.createElement('div');
-  zoomGroup.className = 'group';
-  const zoomLabel = document.createElement('span');
-  zoomLabel.className = 'groupLabel';
-  zoomLabel.textContent = 'Zoom:';
-  zoomGroup.appendChild(zoomLabel);
-  const btnOut = document.createElement('button');
-  btnOut.className = 'zoomBtn'; btnOut.textContent = '\u2212'; btnOut.title = 'Zoom out';
-  const btnIn = document.createElement('button');
-  btnIn.className = 'zoomBtn'; btnIn.textContent = '+'; btnIn.title = 'Zoom in';
-  const btnReset = document.createElement('button');
-  btnReset.className = 'zoomBtn'; btnReset.textContent = '\u2317'; btnReset.title = 'Reset view';
-  zoomGroup.appendChild(btnOut); zoomGroup.appendChild(btnIn); zoomGroup.appendChild(btnReset);
-  toolbar.appendChild(zoomGroup);
-
   const hint = document.createElement('span');
   hint.className = 'groupLabel';
-  hint.textContent = 'Scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it \u00b7 groups, well-known accounts, unresolved SIDs, and other high-fan-out accounts show only their direct reach here -- click one to expand it fully';
+  hint.textContent = 'Depth = how many levels of subfolders to auto-expand \u00b7 each subfolder\'s own children branch from it, not a shared pool \u00b7 click the \u25b8 to expand/collapse manually \u00b7 click a folder name to select it';
   toolbar.appendChild(hint);
-
   wrap.appendChild(toolbar);
 
-  /* ---- SVG ---- */
-  const svg = svgEl('svg', { class: 'graph', viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, xmlns: 'http://www.w3.org/2000/svg' });
-  const edgesLayer = svgEl('g', { class: 'edgesLayer' });
-  const nodesLayer = svgEl('g', { class: 'nodesLayer' });
-  svg.appendChild(edgesLayer);
-  svg.appendChild(nodesLayer);
-  wrap.appendChild(svg);
-
-  // Per-node list of {el, attr} so dragging a node also drags its connected edge endpoints.
-  const linesByNode = new Map();
-  function trackLine(key, el, xAttr, yAttr) {
-    if (!linesByNode.has(key)) linesByNode.set(key, []);
-    linesByNode.get(key).push({ el, xAttr, yAttr });
-  }
-
-  // Draw edges (parent -> child, i.e. one per non-center node, connecting it to its BFS parent).
-  g.layers.forEach((layerKeys, hop) => {
-    if (hop === 0) return;
-    layerKeys.forEach(key => {
-      const info = g.visited.get(key);
-      const parentPos = positions.get(info.from);
-      const pos = positions.get(key);
-      const edisp = edgeDisplayInfo(info.edgeInfo);
-      const line = svgEl('line', {
-        x1: parentPos.x, y1: parentPos.y, x2: pos.x, y2: pos.y,
-        stroke: edisp.color, 'stroke-width': edisp.dashed ? 1.5 : 3,
-        'stroke-dasharray': edisp.dashed ? '5,4' : 'none', opacity: 0.85
-      });
-      edgesLayer.appendChild(line);
-      trackLine(info.from, line, 'x1', 'y1');
-      trackLine(key, line, 'x2', 'y2');
-
-      const midx = (parentPos.x + pos.x) / 2, midy = (parentPos.y + pos.y) / 2;
-      const elabel = svgEl('text', { class: 'edgeLabel', x: midx, y: midy, 'text-anchor': 'middle' });
-      elabel.textContent = edisp.label;
-      edgesLayer.appendChild(elabel);
-    });
+  const maxAutoExpandDepth = state.depth === Infinity ? Infinity : state.depth;
+  const expandBudget = { count: 0 };
+  const treeHost = document.createElement('div');
+  treeHost.className = 'treeHost';
+  rootFolderIndices.forEach(rootIdx => {
+    treeHost.appendChild(renderFolderNode(rootIdx, 1, maxAutoExpandDepth, onSelectFolder, selectedFolderIdx, expandBudget));
   });
+  wrap.appendChild(treeHost);
 
-  // Draw nodes.
-  const allKeys = [].concat(...g.layers);
-  allKeys.forEach(key => {
-    const pos = positions.get(key);
-    const info = nodeDisplayInfo(key);
-    const isCenter = key === centerKey;
-    const r = isCenter ? 26 : 17;
-
-    const group = svgEl('g', { class: 'nodeGroup', transform: `translate(${pos.x},${pos.y})`, 'data-key': key });
-    const circle = svgEl('circle', { class: 'nodeCircle' + (isCenter ? ' centerCircle' : ''), r, fill: isCenter ? undefined : info.color });
-    group.appendChild(circle);
-
-    if (info.flagged && !isCenter) {
-      group.appendChild(svgEl('circle', { cx: r * 0.7, cy: -r * 0.7, r: 5, fill: '#ffb454', stroke: '#000', 'stroke-width': 0.5, class: 'flagRing' }));
-    }
-
-    const l1 = svgEl('text', { class: 'labelLine1', x: 0, y: r + 12, 'text-anchor': 'middle' });
-    l1.textContent = truncateLabel(info.line1, 20);
-    const l2 = svgEl('text', { class: 'labelLine2', x: 0, y: r + 24, 'text-anchor': 'middle' });
-    l2.textContent = truncateLabel(info.line2, 22);
-    group.appendChild(l1);
-    group.appendChild(l2);
-
-    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-    title.textContent = info.full;
-    group.appendChild(title);
-
-    nodesLayer.appendChild(group);
-
-    /* ---- Drag handling: mousedown on a node moves it (and its edges); a
-       release without meaningful movement is treated as a click-to-navigate
-       instead, so dragging and clicking don't fight each other. ---- */
-    let dragging = false, moved = false, startClientX = 0, startClientY = 0, startX = pos.x, startY = pos.y;
-
-    function clientToSvgScale() {
-      // getBoundingClientRect is unreliable/zeroed in some test/headless
-      // environments; fall back to the viewBox's own size so the math never
-      // divides by zero or produces NaN, at some cost to precision there.
-      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
-      const vbNow = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : vb;
-      const clientW = (rect && rect.width) ? rect.width : 900;
-      const clientH = (rect && rect.height) ? rect.height : 560;
-      return { sx: vbNow.width / clientW, sy: vbNow.height / clientH };
-    }
-
-    function onMouseMove(e) {
-      if (!dragging) return;
-      const scale = clientToSvgScale();
-      const dx = (e.clientX - startClientX) * scale.sx;
-      const dy = (e.clientY - startClientY) * scale.sy;
-      if (Math.abs(e.clientX - startClientX) > 2 || Math.abs(e.clientY - startClientY) > 2) moved = true;
-      const nx = startX + dx, ny = startY + dy;
-      group.setAttribute('transform', `translate(${nx},${ny})`);
-      pos.x = nx; pos.y = ny;
-      (linesByNode.get(key) || []).forEach(l => {
-        if (l.xAttr === 'x1') { l.el.setAttribute('x1', nx); l.el.setAttribute('y1', ny); }
-        else { l.el.setAttribute('x2', nx); l.el.setAttribute('y2', ny); }
-      });
-    }
-    function onMouseUp() {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      dragging = false;
-      if (!moved && !isCenter) onNavigate(key, false);
-    }
-    group.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      dragging = true; moved = false;
-      startClientX = e.clientX; startClientY = e.clientY;
-      startX = pos.x; startY = pos.y;
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    });
-  });
-
-  /* ---- Pan (drag background) ---- */
-  let panning = false, panStartClientX = 0, panStartClientY = 0, panStartVb = null;
-  svg.addEventListener('mousedown', (e) => {
-    if (e.target !== svg) return; // a node's mousedown already stopPropagation()'d
-    panning = true;
-    panStartClientX = e.clientX; panStartClientY = e.clientY;
-    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
-    panStartVb = { x: cur[0], y: cur[1], w: cur[2], h: cur[3] };
-  });
-  function panMove(e) {
-    if (!panning) return;
-    const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
-    const clientW = (rect && rect.width) ? rect.width : 900;
-    const clientH = (rect && rect.height) ? rect.height : 560;
-    const dx = (e.clientX - panStartClientX) * (panStartVb.w / clientW);
-    const dy = (e.clientY - panStartClientY) * (panStartVb.h / clientH);
-    svg.setAttribute('viewBox', `${panStartVb.x - dx} ${panStartVb.y - dy} ${panStartVb.w} ${panStartVb.h}`);
-  }
-  function panEnd() { panning = false; }
-  document.addEventListener('mousemove', panMove);
-  document.addEventListener('mouseup', panEnd);
-
-  /* ---- Zoom (wheel + buttons) ---- */
-  const MIN_W = 200, MAX_W = 6000;
-  function zoomBy(factor, clientX, clientY) {
-    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
-    let [x, y, w, h] = cur;
-    const newW = Math.min(MAX_W, Math.max(MIN_W, w * factor));
-    const ratio = newW / w;
-    const newH = h * ratio;
-    let anchorX = x + w / 2, anchorY = y + h / 2;
-    if (clientX !== undefined) {
-      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
-      if (rect && rect.width) {
-        anchorX = x + (clientX - rect.left) * (w / rect.width);
-        anchorY = y + (clientY - rect.top) * (h / rect.height);
-      }
-    }
-    const newX = anchorX - (anchorX - x) * ratio;
-    const newY = anchorY - (anchorY - y) * ratio;
-    svg.setAttribute('viewBox', `${newX} ${newY} ${newW} ${newH}`);
-  }
-  svg.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    zoomBy(e.deltaY > 0 ? 1.15 : (1 / 1.15), e.clientX, e.clientY);
-  }, { passive: false });
-  btnIn.onclick = () => zoomBy(1 / 1.3);
-  btnOut.onclick = () => zoomBy(1.3);
-  btnReset.onclick = () => svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
-
-  if (g.truncated) {
+  if (expandBudget.count >= TREE_AUTO_EXPAND_CAP) {
     const note = document.createElement('div');
-    note.className = 'graphNote';
-    note.textContent = `Some connections at this depth were too numerous to draw (kept the ${perSourceCap} most notable per node, and ${DEPTH_CAP} nodes overall). Reduce depth, or use the table below for the complete, uncapped list.`;
+    note.className = 'treeNote';
+    note.textContent = `This tree is large -- auto-expansion stopped after ${TREE_AUTO_EXPAND_CAP} folders to stay responsive. Anything still collapsed can be expanded manually by clicking its \u25b8, or reduce depth.`;
     wrap.appendChild(note);
   }
 
   return wrap;
 }
-
-/* --------------------------------- Sortable table ---------------------------- */
 
 function renderTable(rows, columns, opts) {
   // columns: [{ key, label, get(row), sortable }]
@@ -898,15 +623,26 @@ function renderIdentity(idx) {
   content.innerHTML = '';
   content.appendChild(identityInfoCard(idn));
 
-  const centerKey = 'i:' + idx;
-  const onNavigate = (key, inPlace) => {
-    const kind = key[0], kidx = parseInt(key.slice(2), 10);
-    if (kind === 'f') selectFolder(kidx, !inPlace); else selectIdentity(kidx, !inPlace);
-  };
-  content.appendChild(renderEgoGraph(centerKey, onNavigate));
-
   const edgeIdxs = byIdentity.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
+
+  // Every distinct folder this identity directly accesses becomes its OWN tree
+  // root -- each expands into its own subfolder structure independently, with
+  // no relationship-hop traversal through other identities/groups at all, so
+  // there's no way for something outside this identity's own access to appear.
+  // computeTopmostRoots collapses a folder-and-several-of-its-own-descendants
+  // (common with inherited ACEs recorded per-folder) down to just the topmost
+  // one per branch, so a subfolder never shows up as a duplicate second root.
+  const allAccessedFolders = Array.from(new Set(allRows.map(r => r.e[0])));
+  const rootFolderIndices = computeTopmostRoots(allAccessedFolders)
+    .sort((a, b) => DATA.folders[a].path.localeCompare(DATA.folders[b].path));
+
+  content.appendChild(renderFolderTreeView(
+    rootFolderIndices,
+    (folderIdx) => selectFolder(folderIdx, true),
+    null, // no single "selected" folder highlight makes sense from an identity view with multiple roots
+    () => renderIdentity(idx)
+  ));
 
   const columns = [
     { key: 'path', label: 'Path', get: r => DATA.folders[r.e[0]].path },
@@ -939,12 +675,12 @@ function renderFolder(idx) {
   content.innerHTML = '';
   content.appendChild(folderInfoCard(f));
 
-  const centerKey = 'f:' + idx;
-  const onNavigate = (key, inPlace) => {
-    const kind = key[0], kidx = parseInt(key.slice(2), 10);
-    if (kind === 'f') selectFolder(kidx, !inPlace); else selectIdentity(kidx, !inPlace);
-  };
-  content.appendChild(renderEgoGraph(centerKey, onNavigate));
+  content.appendChild(renderFolderTreeView(
+    [idx],
+    (folderIdx) => selectFolder(folderIdx, true),
+    idx,
+    () => renderFolder(idx)
+  ));
 
   const edgeIdxs = byFolder.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));

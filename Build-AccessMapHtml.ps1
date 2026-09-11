@@ -3,9 +3,9 @@
 <#
 .SYNOPSIS
     Turns the CSVs from Invoke-NTFSPermissionAudit.ps1 into a single, self-contained,
-    interactive HTML "access map" -- a BloodHound-style click-a-node-see-its-neighbors
-    view of who has access to what -- with no server, no database, and no external
-    JavaScript libraries. Open the resulting .html file directly in a browser.
+    interactive HTML "access map" -- a collapsible folder/subfolder tree with identity
+    detail at every level -- with no server, no database, and no external JavaScript
+    libraries. Open the resulting .html file directly in a browser.
 
 .DESCRIPTION
     There isn't really a mainstream "BloodHound for filesystem ACLs": BloodHound itself
@@ -16,22 +16,27 @@
     the CSVs you already have into a single portable HTML file:
 
       - Left sidebar: search/filter across identities and folders, tabbed.
+      - Select a folder: info card (inheritance status) + a collapsible tree rooted at
+        that folder, showing its actual subfolder structure (not a relationship graph --
+        each subfolder's own children branch from it specifically, never pooled with a
+        sibling's) + a full sortable table of every identity with access to it.
       - Select an identity: info card (title/department/manager/enabled/last logon from
-        ADIdentityDetails.csv) + a radial "ego network" graph of the folders they can
-        reach + a full sortable table of every path (with rights/inherited/broken-here/
-        granted-via-group), exportable back to CSV from the browser itself.
-      - Select a folder: info card (inheritance status) + a radial graph of who has
-        access + a full sortable table of every identity, same export option.
+        ADIdentityDetails.csv) + the same kind of tree, but with one independent root
+        per folder that identity directly accesses + a full sortable table of every
+        path they can reach.
       - Quick filters for "broken inheritance" folders and "disabled/dormant" identities,
         since those are usually what a review is actually looking for.
 
-    The radial graph is capped to a manageable number of the most notable edges per
-    node (explicit before inherited, higher rights first) to stay readable and fast
-    without a query engine behind it -- the full, uncapped list is always in the table
-    underneath. All data is embedded directly in the HTML as JSON (not loaded via
-    separate files), so it opens correctly straight from disk (file://) with no web
-    server and no internet access required, and no external script/CSS files are
-    referenced -- everything needed is in the one .html file.
+    The tree's depth control (1-5, or Full) sets how many levels of subfolder nesting
+    to auto-expand -- 1 shows just the selected folder, 2 adds its direct subfolders,
+    3 adds their own subfolders in turn, and so on; anything can also be expanded or
+    collapsed manually regardless of the depth setting. Because it's a genuine
+    subfolder hierarchy rather than a relationship graph, there's no way for something
+    outside a given folder's own contents to appear when browsing it. All data is
+    embedded directly in the HTML as JSON (not loaded via separate files), so it opens
+    correctly straight from disk (file://) with no web server and no internet access
+    required, and no external script/CSS files are referenced -- everything needed is
+    in the one .html file.
 
 .PARAMETER InputFolder
     The output folder from a previous Invoke-NTFSPermissionAudit.ps1 run. Its CSV
@@ -61,10 +66,11 @@
     overwriting.
 
 .PARAMETER MaxEdgesPerNode
-    How many neighbors to draw in the radial graph for a single selected node before
-    truncating (the full list is still always in the table below the graph). Default
-    60 -- higher values make busy nodes (e.g. "Everyone", or a folder with hundreds of
-    ACEs) slower and harder to read.
+    How many subfolders to show under a single folder in the tree before
+    truncating with a "+N more" note (the full list is still always in the
+    table when you select that folder directly). Default 60 -- lower it if a
+    folder with an unusually large number of direct subfolders makes the tree
+    slow or hard to scan.
 
 .EXAMPLE
     .\Build-AccessMapHtml.ps1 -InputFolder C:\Audit\Run1
@@ -75,7 +81,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap.html
 
 .NOTES
-    Version: 0.1.0
+    Version: 0.2.0
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -98,7 +104,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.1.0'
+$ScriptVersion = '0.2.0'
 
 $ErrorActionPreference = 'Stop'
 

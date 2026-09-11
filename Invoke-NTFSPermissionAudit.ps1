@@ -91,10 +91,21 @@
     for this kind of audit, e.g. "Domain Users", "Everyone", "Authenticated Users").
     Comparison is case-insensitive against the resolved NTAccount short name.
 
-.PARAMETER SkipInheritedAcesInFolderReport
-    Omit purely-inherited ACEs from FolderPermissions.csv (keep only explicit ACEs
-    and the folder's own inheritance-broken flag). Useful to cut noise once you've
-    confirmed the ACL at the top of a share and only want to see where it changes.
+.PARAMETER SkipInheritedAces
+    Omit purely-inherited ACEs (keep only explicit ACEs and each folder's own
+    inheritance-broken flag) from BOTH FolderPermissions.csv and
+    IdentityPermissions.csv -- despite the similarly-named older parameter this
+    superseded, it was never folder-report-only; a plain recursive scan
+    otherwise repeats the same inherited ACE on every single folder down an
+    unbroken inheritance chain (a share with 10,000 folders and 5 inherited
+    ACEs each produces ~50,000 near-duplicate rows). Useful once you've
+    confirmed the ACL at the top of a share and only want to see where it
+    actually changes -- and strongly recommended when the output will feed
+    Build-AccessMapHtml.ps1's tree view, since it makes the per-folder access
+    counts shown there meaningful (a folder with no row here is "unchanged
+    from its parent", not "zero"; any row means "something explicit is set
+    here") and keeps the generated HTML file much smaller. -SkipInheritedAcesInFolderReport
+    is still accepted as an alias for scripts already using it.
 
 .PARAMETER OutputFolder
     Where the CSV/log files are written. Created if it doesn't exist. Defaults to
@@ -130,7 +141,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.1.0
+    Version: 0.2.0
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -177,7 +188,8 @@ param(
 
     [string[]]$ExpandGroupsExclude = @('Domain Users', 'Everyone', 'Authenticated Users', 'Users', 'BUILTIN\Users'),
 
-    [switch]$SkipInheritedAcesInFolderReport,
+    [Alias('SkipInheritedAcesInFolderReport')]
+    [switch]$SkipInheritedAces,
 
     [string]$OutputFolder = ".\NTFSAudit_$(Get-Date -Format yyyyMMdd_HHmmss)",
 
@@ -188,7 +200,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.1.0'
+$ScriptVersion = '0.2.0'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -824,9 +836,11 @@ function Process-Object {
         if ($ace.IsInherited -and $IsDirectory -eq $false -and -not $IncludeInheritedFileAces) {
             continue
         }
-        if ($ace.IsInherited -and $SkipInheritedAcesInFolderReport) {
-            # Still needed for identity view unless caller truly wants it gone;
-            # honour the switch literally: skip everywhere it's set.
+        if ($ace.IsInherited -and $SkipInheritedAces) {
+            # Deliberately skips the ACE everywhere (both FolderPermissions.csv
+            # and IdentityPermissions.csv), not just the folder report -- see
+            # the parameter's help text for why that's the actually-useful
+            # behavior, especially when feeding Build-AccessMapHtml.ps1.
             continue
         }
 
