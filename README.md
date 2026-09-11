@@ -231,6 +231,16 @@ What it gives you:
   but with one root per folder that identity directly accesses (so someone
   with access to three unrelated shares sees three independent trees), and a
   full sortable table of every path they can reach.
+- **Two ways to look at whatever's selected, in tabs**: **Tree** (the
+  folder/subfolder hierarchy described below) and **Graph** (a picture --
+  the selected folder or identity in the center, with its *direct*
+  relationships arranged around it, color-coded by rights, draggable,
+  zoomable, and pannable). Your tab choice carries over as you navigate.
+  The Graph tab deliberately only ever shows direct (one-hop) relationships
+  -- no depth control, since there's nothing to page through -- so it can't
+  run into the same clutter a multi-hop relationship graph could; click a
+  node in it to make that the new selection if you want to go further, or
+  use the Tree tab's depth control for subfolder structure.
 - **The tree**: this is deliberately a folder/subfolder hierarchy, not a
   relationship graph -- it mirrors what you'd see in Explorer, with each
   folder's own children branching from it specifically (a subfolder's

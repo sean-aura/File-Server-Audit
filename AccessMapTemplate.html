@@ -62,6 +62,24 @@
   .treeCount { font-size:10px; color:var(--muted); background:var(--panel2); border-radius:8px; padding:1px 7px; flex-shrink:0; }
   .treeChildren { margin-left:20px; padding-left:10px; border-left:1px solid var(--border); }
   .treeMore { font-size:11px; color:var(--muted); font-style:italic; padding:3px 6px 3px 26px; }
+  .detailTabs { display:flex; gap:4px; margin-bottom:8px; }
+  .detailTabBtn { padding:6px 14px; font-size:12px; }
+  .detailTabBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
+  .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; }
+  .graphToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
+  .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
+  .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
+  svg.graph { width:100%; height:520px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
+  svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; pointer-events:none; }
+  svg.graph .nodeGroup { cursor:grab; }
+  svg.graph .nodeGroup:active { cursor:grabbing; }
+  svg.graph .nodeCircle { stroke:#000; stroke-width:1; }
+  svg.graph .centerCircle { fill:#ffb454; }
+  svg.graph .nodeLabel { font-weight:500; }
+  svg.graph .nodeSubLabel { fill:var(--muted); font-size:9px; }
+  svg.graph .edgeLabel { fill:var(--muted); font-size:9px; }
+  svg.graph .flagRing { pointer-events:none; }
   table.datatable { width:100%; border-collapse:collapse; font-size:12px; }
   table.datatable th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); cursor:pointer; color:var(--muted); position:sticky; top:0; background:var(--panel); user-select:none; }
   table.datatable th:hover { color:var(--text); }
@@ -139,10 +157,11 @@ let state = {
   history: [],
   tableSort: { col: null, dir: 1 },
   tableFilter: '',
-  depth: 1             // tree auto-expand depth: 1/2/3/4/5/Infinity ("Full") -- 1 = just the
+  depth: 1,            // tree auto-expand depth: 1/2/3/4/5/Infinity ("Full") -- 1 = just the
                         // folder itself, no subfolders shown yet; 2 = + its direct subfolders;
                         // 3 = + their own subfolders in turn; etc. Each subfolder's own children
                         // branch from it specifically -- never pooled with a sibling's.
+  detailTab: 'tree'    // 'tree' (folder/subfolder hierarchy) or 'graph' (direct-relationships picture)
 };
 
 /* ------------------------------- Precompute ------------------------------- */
@@ -496,6 +515,241 @@ function renderFolderTreeView(rootFolderIndices, onSelectFolder, selectedFolderI
   return wrap;
 }
 
+/* -------------------------------- Simple 1-hop graph -------------------------- */
+/* The picture view: center node plus its DIRECT relationships only (no
+   multi-hop traversal, so none of the earlier hub-explosion/unrelated-
+   relationship issues can recur here -- it always shows exactly what the
+   Tree tab's root row plus the table below it already shows, just as a
+   visual instead of a list). Purely a rendering choice alongside the Tree
+   tab; both read from the same underlying edges. */
+
+function edgeScoreSimple(e) {
+  return (e[3] ? 0 : 1000) + RIGHTS_WEIGHT[e[2]];
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) Object.keys(attrs).forEach(k => el.setAttribute(k, attrs[k]));
+  return el;
+}
+
+function renderSimpleGraph(kind, idx, onNavigate) {
+  const wrap = document.createElement('div');
+  wrap.className = 'graphWrap';
+
+  const edgeIdxs = kind === 'folder' ? (byFolder.get(idx) || []) : (byIdentity.get(idx) || []);
+  let rows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
+  rows.sort((a, b) => edgeScoreSimple(b.e) - edgeScoreSimple(a.e));
+  const capped = rows.slice(0, MAX_EDGES_PER_NODE);
+  const truncated = rows.length > MAX_EDGES_PER_NODE;
+
+  const neighbors = capped.map(r => {
+    if (kind === 'folder') {
+      const idn = DATA.identities[r.e[1]];
+      let sub = idn.type || '';
+      if (r.e[6] >= 0) sub = 'via ' + DATA.identities[r.e[6]].name;
+      return { key: 'i:' + r.e[1], label: idn.name, full: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', sub, e: r.e };
+    }
+    const f = DATA.folders[r.e[0]];
+    return { key: 'f:' + r.e[0], label: lastPathSegment(f.path), full: f.path, color: '#57d3d3', sub: f.broken ? 'broken inheritance' : '', flagged: f.broken, e: r.e };
+  });
+
+  const centerLabel = kind === 'folder' ? lastPathSegment(DATA.folders[idx].path) : DATA.identities[idx].name;
+  const centerFull = kind === 'folder' ? DATA.folders[idx].path : DATA.identities[idx].name;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graphToolbar';
+  const btnOut = document.createElement('button'); btnOut.className = 'zoomBtn'; btnOut.textContent = '\u2212'; btnOut.title = 'Zoom out';
+  const btnIn = document.createElement('button'); btnIn.className = 'zoomBtn'; btnIn.textContent = '+'; btnIn.title = 'Zoom in';
+  const btnReset = document.createElement('button'); btnReset.className = 'zoomBtn'; btnReset.textContent = '\u2317'; btnReset.title = 'Reset view';
+  toolbar.appendChild(btnOut); toolbar.appendChild(btnIn); toolbar.appendChild(btnReset);
+  const hint = document.createElement('span');
+  hint.className = 'groupLabel';
+  hint.textContent = 'Direct relationships only \u00b7 scroll to zoom \u00b7 drag background to pan \u00b7 drag a node to move it \u00b7 click a node to follow it';
+  toolbar.appendChild(hint);
+  wrap.appendChild(toolbar);
+
+  const n = neighbors.length;
+  const RADIUS = Math.max(150, Math.min(320, 50 + n * 7));
+  const half = RADIUS + 140;
+  const vbW = half * 2, vbH = vbW * (520 / 900);
+  const vb = { x: -vbW / 2, y: -vbH / 2, w: vbW, h: vbH };
+
+  const svg = svgEl('svg', { class: 'graph', viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, xmlns: 'http://www.w3.org/2000/svg' });
+  const edgesLayer = svgEl('g', {});
+  const nodesLayer = svgEl('g', {});
+  svg.appendChild(edgesLayer);
+  svg.appendChild(nodesLayer);
+  wrap.appendChild(svg);
+
+  const linesByNode = new Map();
+  function trackLine(key, el, xAttr) {
+    if (!linesByNode.has(key)) linesByNode.set(key, []);
+    linesByNode.get(key).push({ el, xAttr });
+  }
+
+  const positions = new Map();
+  positions.set('center', { x: 0, y: 0 });
+  neighbors.forEach((nb, i) => {
+    const angle = (2 * Math.PI * i / Math.max(n, 1)) - Math.PI / 2;
+    positions.set(nb.key + ':' + i, { x: RADIUS * Math.cos(angle), y: RADIUS * Math.sin(angle) });
+  });
+
+  neighbors.forEach((nb, i) => {
+    const pos = positions.get(nb.key + ':' + i);
+    const e = nb.e;
+    const color = EDGE_COLORS[e[2]];
+    const line = svgEl('line', {
+      x1: 0, y1: 0, x2: pos.x, y2: pos.y,
+      stroke: color, 'stroke-width': e[3] ? 1.5 : 3,
+      'stroke-dasharray': e[3] ? '5,4' : 'none', opacity: 0.85
+    });
+    edgesLayer.appendChild(line);
+    trackLine('center', line, 'x1y1');
+    trackLine(nb.key + ':' + i, line, 'x2y2');
+
+    let edgeLabel = RIGHTS_LABELS[e[2]];
+    if (e[5]) edgeLabel = 'Deny ' + edgeLabel;
+    const midx = pos.x * 0.55, midy = pos.y * 0.55;
+    const lbl = svgEl('text', { class: 'edgeLabel', x: midx, y: midy, 'text-anchor': 'middle' });
+    lbl.textContent = edgeLabel;
+    edgesLayer.appendChild(lbl);
+  });
+
+  function buildNode(key, pos, label, full, color, isCenter, sub, flagged) {
+    const r = isCenter ? 26 : 17;
+    const group = svgEl('g', { class: 'nodeGroup', transform: `translate(${pos.x},${pos.y})`, 'data-key': key });
+    group.appendChild(svgEl('circle', { class: 'nodeCircle' + (isCenter ? ' centerCircle' : ''), r, fill: isCenter ? undefined : color }));
+    if (flagged && !isCenter) {
+      group.appendChild(svgEl('circle', { cx: r * 0.7, cy: -r * 0.7, r: 5, fill: '#ffb454', stroke: '#000', 'stroke-width': 0.5, class: 'flagRing' }));
+    }
+    const nameLbl = svgEl('text', { class: 'nodeLabel', x: 0, y: r + 16, 'text-anchor': 'middle' });
+    nameLbl.textContent = truncateLabel(label, 22);
+    group.appendChild(nameLbl);
+    if (sub) {
+      const subLbl = svgEl('text', { class: 'nodeSubLabel', x: 0, y: r + 28, 'text-anchor': 'middle' });
+      subLbl.textContent = truncateLabel(sub, 24);
+      group.appendChild(subLbl);
+    }
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = full;
+    group.appendChild(title);
+    nodesLayer.appendChild(group);
+    return group;
+  }
+
+  const centerGroup = buildNode('center', positions.get('center'), centerLabel, centerFull, '#ffb454', true, '', false);
+  neighbors.forEach((nb, i) => {
+    const key = nb.key + ':' + i;
+    const pos = positions.get(key);
+    const group = buildNode(key, pos, nb.label, nb.full, nb.color, false, nb.sub, nb.flagged);
+
+    let dragging = false, moved = false, startClientX = 0, startClientY = 0, startX = pos.x, startY = pos.y;
+    function clientToSvgScale() {
+      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+      const vbNow = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : vb;
+      const clientW = (rect && rect.width) ? rect.width : 900;
+      const clientH = (rect && rect.height) ? rect.height : 520;
+      return { sx: vbNow.width / clientW, sy: vbNow.height / clientH };
+    }
+    function onMouseMove(e) {
+      if (!dragging) return;
+      const scale = clientToSvgScale();
+      const dx = (e.clientX - startClientX) * scale.sx;
+      const dy = (e.clientY - startClientY) * scale.sy;
+      if (Math.abs(e.clientX - startClientX) > 2 || Math.abs(e.clientY - startClientY) > 2) moved = true;
+      const nx = startX + dx, ny = startY + dy;
+      group.setAttribute('transform', `translate(${nx},${ny})`);
+      pos.x = nx; pos.y = ny;
+      (linesByNode.get(key) || []).forEach(l => {
+        if (l.xAttr === 'x2y2') { l.el.setAttribute('x2', nx); l.el.setAttribute('y2', ny); }
+      });
+    }
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      dragging = false;
+      if (!moved) onNavigate(nb.key);
+    }
+    group.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      dragging = true; moved = false;
+      startClientX = e.clientX; startClientY = e.clientY;
+      startX = pos.x; startY = pos.y;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+
+  let panning = false, panStartClientX = 0, panStartClientY = 0, panStartVb = null;
+  svg.addEventListener('mousedown', (e) => {
+    if (e.target !== svg) return;
+    panning = true;
+    panStartClientX = e.clientX; panStartClientY = e.clientY;
+    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
+    panStartVb = { x: cur[0], y: cur[1], w: cur[2], h: cur[3] };
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!panning) return;
+    const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    const clientW = (rect && rect.width) ? rect.width : 900;
+    const clientH = (rect && rect.height) ? rect.height : 520;
+    const dx = (e.clientX - panStartClientX) * (panStartVb.w / clientW);
+    const dy = (e.clientY - panStartClientY) * (panStartVb.h / clientH);
+    svg.setAttribute('viewBox', `${panStartVb.x - dx} ${panStartVb.y - dy} ${panStartVb.w} ${panStartVb.h}`);
+  });
+  document.addEventListener('mouseup', () => { panning = false; });
+
+  const MIN_W = 200, MAX_W = 6000;
+  function zoomBy(factor, clientX, clientY) {
+    const cur = svg.getAttribute('viewBox').split(' ').map(Number);
+    let [x, y, w, h] = cur;
+    const newW = Math.min(MAX_W, Math.max(MIN_W, w * factor));
+    const ratio = newW / w;
+    const newH = h * ratio;
+    let anchorX = x + w / 2, anchorY = y + h / 2;
+    if (clientX !== undefined) {
+      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+      if (rect && rect.width) {
+        anchorX = x + (clientX - rect.left) * (w / rect.width);
+        anchorY = y + (clientY - rect.top) * (h / rect.height);
+      }
+    }
+    const newX = anchorX - (anchorX - x) * ratio;
+    const newY = anchorY - (anchorY - y) * ratio;
+    svg.setAttribute('viewBox', `${newX} ${newY} ${newW} ${newH}`);
+  }
+  svg.addEventListener('wheel', (e) => { e.preventDefault(); zoomBy(e.deltaY > 0 ? 1.15 : (1 / 1.15), e.clientX, e.clientY); }, { passive: false });
+  btnIn.onclick = () => zoomBy(1 / 1.3);
+  btnOut.onclick = () => zoomBy(1.3);
+  btnReset.onclick = () => svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+
+  // Clicking the center node itself is a no-op navigation-wise (it's already selected).
+  centerGroup.addEventListener('mousedown', (e) => e.stopPropagation());
+
+  if (truncated) {
+    const note = document.createElement('div');
+    note.className = 'graphNote';
+    note.textContent = `Showing the ${MAX_EDGES_PER_NODE} most notable of ${rows.length} direct relationships (explicit access and higher rights first). Full list is in the table below.`;
+    wrap.appendChild(note);
+  }
+
+  return wrap;
+}
+
+function renderDetailTabs(onTabChange) {
+  const bar = document.createElement('div');
+  bar.className = 'detailTabs';
+  [['tree', 'Tree'], ['graph', 'Graph']].forEach(([tab, label]) => {
+    const btn = document.createElement('button');
+    btn.className = 'detailTabBtn' + (state.detailTab === tab ? ' active' : '');
+    btn.textContent = label;
+    btn.onclick = () => { state.detailTab = tab; onTabChange(); };
+    bar.appendChild(btn);
+  });
+  return bar;
+}
+
 function renderTable(rows, columns, opts) {
   // columns: [{ key, label, get(row), sortable }]
   // The filter <input> (and the table/toolbar shells) are created exactly ONCE
@@ -626,23 +880,32 @@ function renderIdentity(idx) {
   const edgeIdxs = byIdentity.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
 
-  // Every distinct folder this identity directly accesses becomes its OWN tree
-  // root -- each expands into its own subfolder structure independently, with
-  // no relationship-hop traversal through other identities/groups at all, so
-  // there's no way for something outside this identity's own access to appear.
-  // computeTopmostRoots collapses a folder-and-several-of-its-own-descendants
-  // (common with inherited ACEs recorded per-folder) down to just the topmost
-  // one per branch, so a subfolder never shows up as a duplicate second root.
-  const allAccessedFolders = Array.from(new Set(allRows.map(r => r.e[0])));
-  const rootFolderIndices = computeTopmostRoots(allAccessedFolders)
-    .sort((a, b) => DATA.folders[a].path.localeCompare(DATA.folders[b].path));
+  content.appendChild(renderDetailTabs(() => renderIdentity(idx)));
 
-  content.appendChild(renderFolderTreeView(
-    rootFolderIndices,
-    (folderIdx) => selectFolder(folderIdx, true),
-    null, // no single "selected" folder highlight makes sense from an identity view with multiple roots
-    () => renderIdentity(idx)
-  ));
+  if (state.detailTab === 'graph') {
+    content.appendChild(renderSimpleGraph('identity', idx, (key) => {
+      const kind = key[0], kidx = parseInt(key.slice(2), 10);
+      if (kind === 'f') selectFolder(kidx, true); else selectIdentity(kidx, true);
+    }));
+  } else {
+    // Every distinct folder this identity directly accesses becomes its OWN tree
+    // root -- each expands into its own subfolder structure independently, with
+    // no relationship-hop traversal through other identities/groups at all, so
+    // there's no way for something outside this identity's own access to appear.
+    // computeTopmostRoots collapses a folder-and-several-of-its-own-descendants
+    // (common with inherited ACEs recorded per-folder) down to just the topmost
+    // one per branch, so a subfolder never shows up as a duplicate second root.
+    const allAccessedFolders = Array.from(new Set(allRows.map(r => r.e[0])));
+    const rootFolderIndices = computeTopmostRoots(allAccessedFolders)
+      .sort((a, b) => DATA.folders[a].path.localeCompare(DATA.folders[b].path));
+
+    content.appendChild(renderFolderTreeView(
+      rootFolderIndices,
+      (folderIdx) => selectFolder(folderIdx, true),
+      null, // no single "selected" folder highlight makes sense from an identity view with multiple roots
+      () => renderIdentity(idx)
+    ));
+  }
 
   const columns = [
     { key: 'path', label: 'Path', get: r => DATA.folders[r.e[0]].path },
@@ -675,12 +938,21 @@ function renderFolder(idx) {
   content.innerHTML = '';
   content.appendChild(folderInfoCard(f));
 
-  content.appendChild(renderFolderTreeView(
-    [idx],
-    (folderIdx) => selectFolder(folderIdx, true),
-    idx,
-    () => renderFolder(idx)
-  ));
+  content.appendChild(renderDetailTabs(() => renderFolder(idx)));
+
+  if (state.detailTab === 'graph') {
+    content.appendChild(renderSimpleGraph('folder', idx, (key) => {
+      const kind = key[0], kidx = parseInt(key.slice(2), 10);
+      if (kind === 'f') selectFolder(kidx, true); else selectIdentity(kidx, true);
+    }));
+  } else {
+    content.appendChild(renderFolderTreeView(
+      [idx],
+      (folderIdx) => selectFolder(folderIdx, true),
+      idx,
+      () => renderFolder(idx)
+    ));
+  }
 
   const edgeIdxs = byFolder.get(idx) || [];
   const allRows = edgeIdxs.map(ei => ({ ei, e: DATA.edges[ei] }));
