@@ -81,7 +81,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap.html
 
 .NOTES
-    Version: 0.2.0
+    Version: 0.2.1
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -104,7 +104,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.2.0'
+$ScriptVersion = '0.2.1'
 
 $ErrorActionPreference = 'Stop'
 
@@ -135,6 +135,16 @@ function Find-LatestRunFile {
 $identityPermsFile = Find-LatestRunFile -Prefix 'IdentityPermissions' -Required
 $identityPermsPath = $identityPermsFile
 $adDetailsPath     = Find-LatestRunFile -Prefix 'ADIdentityDetails'
+$errorsLogPath     = $null
+$errorsLogCandidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter 'Errors_*.log' -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending)
+if ($errorsLogCandidates.Count -eq 0) {
+    $legacyErrorsLog = Join-Path $InputFolder 'Errors.log'
+    if (Test-Path -LiteralPath $legacyErrorsLog) { $errorsLogPath = $legacyErrorsLog }
+}
+else {
+    $errorsLogPath = $errorsLogCandidates[0].FullName
+}
 
 # Reuse the source run's timestamp for the default output file name too, so the
 # HTML file visibly pairs with the CSVs it was built from. Falls back to "now" if
@@ -184,6 +194,44 @@ if ($adDetailsPath -and (Test-Path -LiteralPath $adDetailsPath)) {
 }
 else {
     Write-Warning "No ADIdentityDetails*.csv found in '$InputFolder'. Identity nodes will show name/type only (no department/manager/account-state info)."
+}
+
+# Errors.log records objects the audit couldn't read an ACL for at all (access
+# denied, path too long, etc.) -- these are folders that simply don't appear
+# anywhere in IdentityPermissions.csv, so without this they'd be silently
+# invisible to anyone looking at the access map. Parsed into the summary view
+# as "folders that could not be scanned" rather than left as a text log only.
+$scanErrors = New-Object System.Collections.Generic.List[object]
+if ($errorsLogPath -and (Test-Path -LiteralPath $errorsLogPath)) {
+    Write-Host "Reading $errorsLogPath ..." -ForegroundColor Cyan
+    $errorLinePattern = '^\[(?<ts>[^\]]+)\]\s(?<path>.+?)\s::\s(?<msg>.+)$'
+    foreach ($line in (Get-Content -LiteralPath $errorsLogPath)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $m = [regex]::Match($line, $errorLinePattern)
+        if ($m.Success) {
+            $msg = $m.Groups['msg'].Value
+            $category = switch -Regex ($msg) {
+                'Access denied'                      { 'Access denied'; break }
+                'PathTooLong|too long|not supported.*platform' { 'Path/platform limitation'; break }
+                default                               { 'Other' }
+            }
+            $scanErrors.Add([PSCustomObject]@{
+                Timestamp = $m.Groups['ts'].Value
+                Path      = $m.Groups['path'].Value
+                Message   = $msg
+                Category  = $category
+            })
+        }
+        else {
+            # Line didn't match the usual "[ts] path :: message" shape (e.g. a
+            # wrapped/multi-line message) -- keep it rather than silently drop it.
+            $scanErrors.Add([PSCustomObject]@{ Timestamp = $null; Path = $null; Message = $line; Category = 'Other' })
+        }
+    }
+    Write-Verbose "Loaded $($scanErrors.Count) scan error(s)."
+}
+else {
+    Write-Verbose "No Errors*.log found in '$InputFolder' -- assuming a clean scan with nothing to report."
 }
 
 #region Build compact index structures -----------------------------------------
@@ -316,6 +364,7 @@ $dataObject = [ordered]@{
     generatedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     sourceFolder = $InputFolder
     toolkitVersion = $ScriptVersion
+    scanErrors = $scanErrors
 }
 Write-Verbose "Serializing to JSON..."
 $json = $dataObject | ConvertTo-Json -Depth 6 -Compress

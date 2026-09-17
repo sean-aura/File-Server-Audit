@@ -141,7 +141,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.2.0
+    Version: 0.2.1
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -200,7 +200,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.2.0'
+$ScriptVersion = '0.2.1'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest

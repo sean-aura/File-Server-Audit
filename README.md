@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.2.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.2.1. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -30,7 +30,7 @@ the scripts never hard-fail just because one optional piece is missing.
    IdentityPermissions.csv     (per-user/identity view)
    ADIdentityDetails.csv       (who these identities actually are, per AD)
    InheritanceExceptions.csv   (every folder where inheritance is broken)
-   Errors.log                  (access-denied / path-too-long, etc.)
+   Errors_<timestamp>.log      (access-denied / path-too-long, etc.)
         |
         v
 3. Build-AccessMapHtml.ps1            -- OPTIONAL: turn the CSVs into one
@@ -197,8 +197,9 @@ treat it as approximate, not to-the-day precise.
 inheritance is broken, for a fast "where did someone click 'Disable
 inheritance'" sweep without wading through the full per-ACE report.
 
-**`Errors.log`** -- anything the scan couldn't read (permission denied on the
-scanning account, path length issues, etc.), so gaps in coverage are visible
+**`Errors.log`** (written as `Errors_<timestamp>.log`, matching the run) --
+anything the scan couldn't read (permission denied on the scanning
+account, path length issues, etc.), so gaps in coverage are visible
 rather than silent.
 
 ### Step 3 (optional) - interactive access map
@@ -342,11 +343,27 @@ Like the CSVs, `Errors.log` is picked up automatically from `-InputFolder`
 if present (matching the same run by timestamp) -- nothing extra to pass.
 If it's missing entirely, the Summary view's "could not be scanned" count
 just shows 0 rather than erroring, since an older run or a clean scan with
-nothing to report both look the same from here.
+nothing to report both look the same from here -- **which means a 0 there
+doesn't always mean "clean scan."** The same silent-0 behavior also
+happens if `Build-AccessMapHtml.ps1` itself predates this feature, or if
+you're pointing it at a different folder than the one the audit actually
+wrote to. If you know there were scan errors but the report shows 0,
+check, in order: (1) does the generated `AccessMap.html`'s footer say the
+`toolkit v` number you expect -- an older version number there means an
+older script was used to build it, regardless of which version you're
+looking at right now; (2) is there actually an `Errors_<timestamp>.log`
+(or plain `Errors.log`) file sitting in the exact `-InputFolder` you
+passed; (3) did you regenerate the HTML *after* the run that produced
+those errors, not before.
 
-**`Build-AccessMapHtml.ps1` needs `AccessMapTemplate.html` in the same
-folder** (it fills in the data and writes the result as `AccessMap.html`) --
-keep the two files together.
+**Keep `Invoke-NTFSPermissionAudit.ps1`, `Build-AccessMapHtml.ps1`, and
+`AccessMapTemplate.html` as a matched set.** `Build-AccessMapHtml.ps1`
+needs `AccessMapTemplate.html` sitting in the same folder to run at all --
+it reads that file, fills in the data, and writes the result as
+`AccessMap.html` -- so update all three files together rather than
+swapping just one, and use the generated report's footer (`toolkit
+vX.X.X`) as a quick sanity check that the version you're looking at is
+the one you think it is.
 
 ## Notes and caveats
 
