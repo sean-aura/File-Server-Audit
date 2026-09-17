@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.2.1. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.2.2. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -120,7 +120,32 @@ Common variants:
 # explicit ACLs and each folder's inheritance-broken flag -- recommended when
 # the output will feed Build-AccessMapHtml.ps1's tree view
 .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -SkipInheritedAces
+
+# Scan level by level (root, then all its children, then all of THEIR
+# children, etc.) instead of one branch all the way down at a time --
+# recommended for a very large tree you might not finish scanning in one
+# sitting, so an interrupted run still covers the top of every branch
+# rather than the whole depth of just one
+.\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared' -BreadthFirst
 ```
+
+`-BreadthFirst` changes only the *order* objects are visited and written,
+not what gets scanned or the final CSV contents -- the folder hierarchy in
+`Build-AccessMapHtml.ps1`'s tree view is reconstructed from each row's own
+path string, never from scan order, so **this has no effect on HTML
+generation either way.** The reason to use it: if a scan of a very large
+share gets interrupted partway through (killed, times out, a reboot), the
+default depth-first order leaves you with one fully-scanned branch and
+nothing else, while breadth-first leaves you with the top few levels of
+*everything* -- and that partial result is exactly what the tree view
+already displays well by default (a shallow-but-complete tree looks
+identical to an intentionally `-MaxDepth`-limited run; nothing extra
+needed on the HTML side to make use of it). The trade-off: on a very
+wide, shallow share (many thousands of top-level folders), breadth-first
+can hold more pending folders in memory at once than depth-first would,
+since it fully visits one level before starting the next -- rarely
+significant in practice (each pending item is just a path and a depth
+number), but a real characteristic difference.
 
 `-SkipInheritedAces` matters more than it might look: a plain recursive scan
 records the same inherited ACE on *every* folder down an unbroken inheritance

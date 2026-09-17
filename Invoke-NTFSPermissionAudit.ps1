@@ -79,6 +79,25 @@
     in it) -- no subfolders at all. Equivalent to -MaxDepth 0, but clearer to read
     and to script around. Takes precedence over -MaxDepth if both are supplied.
 
+.PARAMETER BreadthFirst
+    Scan level by level -- every folder at the current depth before moving to the
+    next depth -- instead of the default depth-first order (one branch all the way
+    down before backing up to its siblings). Doesn't change what gets scanned or
+    the final CSV contents (folder hierarchy in the output is reconstructed from
+    each row's own path, not from scan order), only the ORDER objects are visited
+    and written. The practical reason to use this: if a scan gets interrupted
+    partway through (killed, times out, machine reboots) on a very large tree,
+    depth-first leaves you with one fully-scanned branch and nothing else,
+    whereas breadth-first leaves you with the top few levels of EVERYTHING --
+    usually a far more useful partial result, and it's also what
+    Build-AccessMapHtml.ps1's tree view already displays well by default (a
+    shallow-but-complete tree, no different from an intentionally
+    -MaxDepth-limited run). The trade-off: on a very wide, shallow share (many
+    thousands of top-level folders), breadth-first can hold more pending items in
+    memory at once than depth-first would, since it visits an entire level before
+    going deeper -- rarely significant in practice (each pending item is just a
+    path and a depth number), but a real characteristic difference worth knowing.
+
 .PARAMETER ExpandGroups
     Recursively expand each group ACE to its effective members and add rows for
     them in the per-identity report (with GrantedViaGroup populated). Without this
@@ -141,7 +160,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.2.1
+    Version: 0.2.2
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -184,6 +203,8 @@ param(
 
     [switch]$NoRecursion,
 
+    [switch]$BreadthFirst,
+
     [switch]$ExpandGroups,
 
     [string[]]$ExpandGroupsExclude = @('Domain Users', 'Everyone', 'Authenticated Users', 'Users', 'BUILTIN\Users'),
@@ -200,7 +221,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.2.1'
+$ScriptVersion = '0.2.2'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -921,14 +942,27 @@ function Invoke-TreeWalk {
         return
     }
 
-    # Stack entries: @{ Path = ...; Depth = ... }
-    $stack = New-Object System.Collections.Generic.Stack[object]
-    $stack.Push(@{ Path = $RootPath; Depth = 0 })
+    # Depth-first (default) uses a Stack (LIFO): push a folder's children, and the
+    # most-recently-pushed child is visited next, so one branch is followed all
+    # the way down before backing up to its siblings. Breadth-first uses a Queue
+    # (FIFO) instead: children are visited in the order their PARENTS were
+    # visited, so every folder at the current depth is processed before any
+    # folder at the next depth. Both are O(1) per add/remove -- deliberately not
+    # implemented as a single List with RemoveAt(0) for the breadth-first case,
+    # which would be O(n) per removal and quietly quadratic on a large scan.
+    if ($BreadthFirst) {
+        $frontier = New-Object System.Collections.Generic.Queue[object]
+    }
+    else {
+        $frontier = New-Object System.Collections.Generic.Stack[object]
+    }
+    if ($BreadthFirst) { $frontier.Enqueue(@{ Path = $RootPath; Depth = 0 }) }
+    else { $frontier.Push(@{ Path = $RootPath; Depth = 0 }) }
 
     $processedCount = 0
 
-    while ($stack.Count -gt 0) {
-        $current = $stack.Pop()
+    while ($frontier.Count -gt 0) {
+        $current = if ($BreadthFirst) { $frontier.Dequeue() } else { $frontier.Pop() }
         $currentPath = $current.Path
         $currentDepth = $current.Depth
 
@@ -969,7 +1003,8 @@ function Invoke-TreeWalk {
                 $displaySub = if ($currentPath.StartsWith('\\?\')) {
                     $subDir -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
                 } else { $subDir }
-                $stack.Push(@{ Path = $displaySub; Depth = $currentDepth + 1 })
+                if ($BreadthFirst) { $frontier.Enqueue(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
+                else { $frontier.Push(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
             }
         }
         catch [System.UnauthorizedAccessException] {

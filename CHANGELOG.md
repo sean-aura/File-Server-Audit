@@ -2,6 +2,191 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.2] - Breadth-first scan order option
+
+### Added
+- `Invoke-NTFSPermissionAudit.ps1`: new `-BreadthFirst` switch. Scans level
+  by level (every folder at the current depth before any folder at the
+  next depth) instead of the default depth-first order (one branch all
+  the way down before backing up to its siblings). Implemented with a
+  `Queue` instead of a `Stack` for the traversal frontier when set (both
+  are O(1) per operation -- deliberately not a `List` with `RemoveAt(0)`,
+  which would be quietly O(n) per removal on exactly the large scans this
+  targets).
+- Rationale: if a scan of a very large share is interrupted partway
+  through (killed, times out, a reboot), depth-first leaves one
+  fully-scanned branch and nothing else, while breadth-first leaves the
+  top few levels of everything -- a far more useful partial result in
+  most cases, and one the HTML tree view already displays well with no
+  changes needed (a shallow-but-complete tree is indistinguishable from
+  an intentionally `-MaxDepth`-limited run).
+
+### Testing notes
+- Built a real nested test directory tree and confirmed via `-Verbose`
+  trace analysis (not just eyeballing it) that both modes visit the
+  identical *set* of folders, breadth-first's depth sequence is strictly
+  non-decreasing, depth-first's is a genuine zigzag, and all depth-1
+  siblings are visited before any depth-2 folder under `-BreadthFirst`.
+  Confirmed default-mode behavior (error counts, folders touched) is
+  byte-for-byte unaffected by the refactor. Confirmed -- by re-running the
+  full HTML test suite unmodified -- that scan order has zero effect on
+  `Build-AccessMapHtml.ps1`'s output, since folder hierarchy there is
+  reconstructed from path strings, never from CSV row order.
+
+---
+
+## [0.2.1] - Version-mismatch troubleshooting (no functional changes)
+
+### Fixed
+- No code changes in this release -- prompted by a real support case
+  where a user's Summary view showed "0 objects could not be scanned"
+  despite `Errors.log` containing 5 real entries. Reproduced the exact
+  scenario synthetically and confirmed the parsing/display pipeline
+  itself was correct; root cause was that only `AccessMapTemplate.html`
+  had been re-shared recently, not the paired `Build-AccessMapHtml.ps1`
+  containing the `Errors.log`-parsing feature -- an older copy of that
+  script silently shows 0 (indistinguishable from "clean scan") rather
+  than erroring.
+
+### Changed
+- Version bumped (all three scripts + README) specifically so the
+  generated report's footer (`toolkit vX.X.X`) can be used as a quick
+  sanity check that the version in front of you is the one you think it
+  is.
+- `README.md`: fixed remaining bare `Errors.log` references to note the
+  actual `Errors_<timestamp>.log` naming; added the diagnostic sequence
+  for a suspicious "0 errors" result (check the footer version, check the
+  log file actually exists where you pointed `-InputFolder`, check the
+  HTML was regenerated after the run that produced the errors); combined
+  the existing file-colocation requirement with new "keep all three
+  scripts as a matched set" guidance.
+
+---
+
+## [0.2.0] - Interactive access map redesign, reliability fixes, PowerShell 7 support
+
+### Fixed
+- **PowerShell 7 compatibility**: `[System.IO.Directory]::GetAccessControl`
+  (used to read ACLs) only exists in full .NET Framework (PS 5.1); PS7 runs
+  on .NET Core, where the same functionality moved to extension methods on
+  `DirectoryInfo`/`FileInfo`. `Get-ObjectAcl` now branches on
+  `$PSVersionTable.PSEdition` so the script works correctly under both.
+- **Owner-resolution crash under `Set-StrictMode`**: `DirectorySecurity`/
+  `FileSecurity` has no public `.Owner` property (only `GetOwner(type)`);
+  a broken fallback line was aborting entire scans whenever an owner SID
+  couldn't be translated to a name (a common, non-exceptional case for
+  orphaned/foreign SIDs). Replaced with a real three-level fallback
+  (friendly name -> raw SID string -> logged placeholder) that cannot
+  itself throw.
+- **Access-map "hub explosion"**: the relationship graph would walk
+  through a shared Group's *own* other access edges, letting one broadly-
+  permissioned group bridge two unrelated parts of the tree into one
+  tangled view. Fixed twice, progressively: first by restricting
+  non-centered Groups/Unresolved/Well-known identities to revealing only
+  their direct reach (membership only) unless they're the actual
+  selection; then generalized from identity *type* to actual *fan-out*,
+  after a screenshot showed a User-typed admin account (`Administrator`)
+  with a large footprint causing the identical problem untouched by the
+  type-only rule.
+- **Color collision**: broken-inheritance folders were colored identically
+  to the actual graph center, creating a "second center" illusion in
+  screenshots. Folders now always render their normal color; the existing
+  small flag-dot indicator (shared with disabled/dormant identity flags)
+  marks broken inheritance without hijacking the node's main color.
+- **Table filter losing keyboard focus on every keystroke**: the filter
+  `<input>` was being destroyed and recreated on every character typed.
+  `renderTable()` now builds the input once and only updates rows/header/
+  export-count afterward.
+
+### Changed
+- **Access map visualization redesigned from a relationship graph to a
+  folder/subfolder tree** as the primary view, after feedback that
+  depth-based relationship hops were the wrong model: a single folder has
+  no meaningful "depth" to traverse, identity views rendered in a
+  fixed-size canvas rather than expanding to a readable size, and higher
+  depths kept reaching back through the share root into relationships
+  outside the selected identity's own access. The tree mirrors Explorer,
+  with each subfolder's own children branching from it specifically
+  (never pooled with a sibling's); depth (1-5, Full) now means levels of
+  subfolder nesting to auto-expand, matching the requested A-B/A-B-1
+  semantics exactly. Structurally eliminates the "hub explosion" class of
+  bugs, since a tree never walks through other identities at all.
+- **The relationship graph brought back as a second "Graph" tab**
+  alongside "Tree", after feedback that the picture view was still
+  wanted for a different purpose (seeing direct relationships visually).
+  Later given its own depth control (separate from the Tree's, since they
+  mean different things), reusing the hub-safe multi-hop traversal logic
+  above.
+- **Duplicate/overlapping tree roots fixed**: a normal recursive audit
+  records an ACE row for every folder in a branch (inherited ACEs
+  captured per-folder), so an identity's "directly accessed folders"
+  naturally includes both a parent and several of its own descendants --
+  shown as a duplicated top-level root without correction. Added
+  `computeTopmostRoots()` to keep only the topmost folder per branch.
+- **`-SkipInheritedAcesInFolderReport` renamed to `-SkipInheritedAces`**
+  (old name kept as a parameter alias) -- it always filtered both CSVs,
+  not just the folder one, so the old name was misleading.
+- **Summary view added**, consolidating scattered counts into one screen
+  shown by default on open: identity breakdown by type, user account
+  health (enabled/disabled/locked/dormant), an access-rights distribution
+  donut chart, a plain-language "what each access level allows and how it
+  could be misused" reference table, and a set of data-driven
+  observations (broad default-group grants, broken inheritance, stale
+  account access, orphaned SIDs, high Full-Control share) each mapped to
+  specific, sourced normative guidance tagged by region -- **AU** (ACSC
+  Essential Eight by maturity level, Australian Government ISM
+  principles), **NZ** (specific NZISM control IDs), **US** (named NIST SP
+  800-53 control IDs and CSF 2.0 subcategories), **Intl** (CIS Controls
+  v8 safeguards) -- researched against current published wording rather
+  than relied on from memory, and explicitly framed as a heuristic
+  starting point for a security/compliance conversation, not a certified
+  assessment. The header's separate stats line was removed as pure
+  duplication once this existed.
+- **`Errors.log` now ingested into the access map** as "folders that
+  could not be scanned", parsed and categorized (access denied / path-
+  platform limitation / other), exportable to CSV -- previously these
+  objects were invisible blind spots with no ACL data to display anywhere.
+- **Output files timestamped** (`FolderPermissions_<timestamp>.csv`, etc.)
+  across all three scripts, with `-Force` required to overwrite an exact
+  collision -- re-running into a shared `-OutputFolder` no longer
+  silently clobbers a previous run.
+- **`Build-AccessMapHtml.ps1` output-path handling**: accepts a full file
+  path, an empty directory (auto-names inside it), or errors clearly on a
+  non-empty directory rather than guessing a filename into it.
+- **DFS discovery reworked for restricted-access environments**: new
+  `-DfsPath` on `Get-FileServerShareInventory.ps1` resolves a known DFS
+  path to its physical target via the client-side `NetDfsGetClientInfo`
+  API -- no DFS admin rights or RSAT module required, unlike
+  `-DfsNamespace`'s full tree enumeration (kept as an optional
+  higher-privilege bonus).
+- `ADIdentityDetails.csv` / access map: added `WhenChanged` as a more
+  consistently-available fallback when `LastLogonTimestampApprox` is
+  blank or stale.
+- Added `LICENSE` (MIT) and `Version`/`$ScriptVersion` metadata (shown in
+  each script's startup banner and, for the access map, in the generated
+  report's own footer) to all three scripts.
+- Added `Manual-DFS-Verification.md`: a checklist for hand-verifying DFS
+  topology when no tooling -- not even `-DfsPath` -- can query it at all.
+
+### Testing notes
+- Each fix above was verified with a purpose-built reproduction before
+  being called fixed, not just patched and assumed correct -- notably the
+  hub-explosion fix was tested against a synthetic dataset mirroring the
+  exact reported scenario (a shared group with access to two unrelated
+  folders) both before and after the fan-out generalization, and the tree
+  redesign was tested against a dataset matching the requested A-B/A-B-1
+  branching example precisely, including that depths 4/5/Full correctly
+  plateau rather than double-counting.
+- Retired four test files that exercised mechanisms intentionally removed
+  in the tree redesign (drag/zoom/pan interaction, BFS hub-restriction on
+  the old single graph) -- expected, not a regression.
+- Test suite grew to 10 files covering the tree, the reintroduced graph
+  (including its own depth control and the hub-safe engine end-to-end),
+  the summary view (including specific AU/NZ/US control-ID citations,
+  not just framework names), focus retention, and scale (400+ identities).
+
+---
+
 ## [0.1.0] - Initial release
 
 ### Added
