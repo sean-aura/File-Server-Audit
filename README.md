@@ -220,6 +220,52 @@ already have into the closest practical equivalent.)
 
 What it gives you:
 
+- **A Summary view, shown by default on open** (and reachable any time via
+  the **Summary** button in the header): a single-screen digest instead of
+  scattered numbers, meant to answer "what's the state of this share"
+  without drilling into individual folders first --
+  - **Top-line counts**: identities total, users (split enabled/disabled),
+    groups, computer/service accounts, folders scanned, folders with broken
+    inheritance, disabled/dormant identities, and objects that couldn't be
+    scanned at all -- each of the last four clickable straight through to
+    the filtered list or detail behind it.
+  - **Folders that couldn't be scanned**: parsed from the audit's
+    `Errors.log` (access denied, path-length limits, etc.) -- these
+    wouldn't otherwise show up anywhere, since they have no ACL data to
+    display, so without this they'd be invisible blind spots rather than a
+    flagged, reviewable list. Exportable to CSV.
+  - **Access rights distribution**: a donut chart plus legend showing what
+    share of all access grants are Full Control vs. Modify vs. Read &
+    Execute, etc.
+  - **What each access level actually allows, and how it could be
+    misused** -- a plain-language reference table (Full Control through
+    Read), since "Modify" and "Full Control" sound similar but the gap
+    between them (changing permissions/ownership) is exactly the kind of
+    thing worth knowing when judging how risky a grant is.
+  - **Observations worth a closer look**: a small set of data-driven
+    findings -- broad/default groups (Everyone, Authenticated Users, Domain
+    Users) holding Full Control or Modify; broken inheritance; disabled,
+    locked, or dormant identities that still have active access; orphaned
+    SIDs still on ACLs; a high share of Full Control overall -- each with a
+    plain-language explanation of why it matters, and specific normative
+    guidance (paraphrased, not quoted verbatim) tagged by region: **AU**
+    (ACSC Essential Eight maturity-level requirements, and the Australian
+    Government ISM's cybersecurity principles), **NZ** (specific NZISM
+    control references, e.g. "16.4.38.C.01"), **US** (named NIST SP 800-53
+    control IDs like AC-6/AC-2(3), and NIST CSF 2.0 subcategories), and
+    **Intl** (CIS Controls v8 safeguards). Where a finding is a genuine,
+    directly-legislated requirement in one of these frameworks (least
+    privilege, disabling stale accounts), the guidance says so specifically
+    with a "MUST"/control-ID level of detail rather than just naming the
+    framework; where the connection is more general (e.g. broken
+    inheritance isn't a named rule in any of these, just a configuration-
+    hygiene concern), the tool says that too, rather than overstating it.
+    **These are a heuristic, data-driven starting point for a conversation
+    with your security/compliance team, not a certified compliance
+    assessment** -- the tool says this in the UI too, and since these
+    frameworks are periodically revised, check the current authoritative
+    source (ACSC, GCSB/NCSC-NZ, NIST, CIS) before treating any of this as a
+    compliance determination either way.
 - **Search/browse** identities or folders in the left sidebar.
 - **Select a folder**: an info card (inheritance status), a collapsible
   **folder/subfolder tree** rooted at that folder, and a full sortable table
@@ -233,14 +279,20 @@ What it gives you:
   full sortable table of every path they can reach.
 - **Two ways to look at whatever's selected, in tabs**: **Tree** (the
   folder/subfolder hierarchy described below) and **Graph** (a picture --
-  the selected folder or identity in the center, with its *direct*
-  relationships arranged around it, color-coded by rights, draggable,
+  the selected folder or identity in the center, with its relationships
+  arranged around it in concentric rings, color-coded by rights, draggable,
   zoomable, and pannable). Your tab choice carries over as you navigate.
-  The Graph tab deliberately only ever shows direct (one-hop) relationships
-  -- no depth control, since there's nothing to page through -- so it can't
-  run into the same clutter a multi-hop relationship graph could; click a
-  node in it to make that the new selection if you want to go further, or
-  use the Tree tab's depth control for subfolder structure.
+  The Graph tab has its **own depth control** (1 / 2 / 3 / 4 / 5 / Full,
+  separate from the Tree's -- they mean different things: relationship
+  hops here vs. subfolder nesting there), defaulting to 1 (direct
+  relationships only). Beyond hop 1, the same hub-safe traversal rules
+  apply as everywhere else in this tool: groups, well-known accounts
+  (Everyone, SYSTEM, etc.), and unusually high-fan-out accounts (an
+  admin/service account with hundreds of grants) only reveal their own
+  direct reach when they're the one actually selected -- otherwise a
+  single shared group could bridge two unrelated parts of the tree
+  together into one tangled picture. Click any node to make it the new
+  selection and follow the chain further.
 - **The tree**: this is deliberately a folder/subfolder hierarchy, not a
   relationship graph -- it mirrors what you'd see in Explorer, with each
   folder's own children branching from it specifically (a subfolder's
@@ -285,6 +337,12 @@ For very large audits (hundreds of thousands of rows), the whole dataset is
 embedded as JSON in the one HTML file, which can get large (tens of MB) --
 still workable, but if it feels sluggish, generate a map per share/subtree
 rather than one for the whole server, or keep the depth setting low.
+
+Like the CSVs, `Errors.log` is picked up automatically from `-InputFolder`
+if present (matching the same run by timestamp) -- nothing extra to pass.
+If it's missing entirely, the Summary view's "could not be scanned" count
+just shows 0 rather than erroring, since an older run or a clean scan with
+nothing to report both look the same from here.
 
 **`Build-AccessMapHtml.ps1` needs `AccessMapTemplate.html` in the same
 folder** (it fills in the data and writes the result as `AccessMap.html`) --
