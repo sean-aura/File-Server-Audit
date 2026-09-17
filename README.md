@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.2.2. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.3.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -127,6 +127,11 @@ Common variants:
 # sitting, so an interrupted run still covers the top of every branch
 # rather than the whole depth of just one
 .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared' -BreadthFirst
+
+# Process ACL reads and identity resolution for several objects at once
+# instead of one at a time -- PowerShell 7+ only; see the caveat below
+# before picking a number
+.\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared' -ThrottleLimit 8
 ```
 
 `-BreadthFirst` changes only the *order* objects are visited and written,
@@ -161,6 +166,44 @@ it's kept as an alias.)
 `-IncludeFiles` is also set) -- no subfolders at all. It's equivalent to
 `-MaxDepth 0` but reads more clearly in scripts/scheduled tasks, and takes
 precedence if both are supplied.
+
+`-ThrottleLimit N` (default 1, meaning fully sequential -- nothing changes
+unless you opt in) processes N objects' ACL reads and identity resolution
+concurrently instead of one at a time. **Requires PowerShell 7+** -- the
+underlying mechanism (`ForEach-Object -Parallel`) doesn't exist in Windows
+PowerShell 5.1, and passing a value above 1 there is a clear, immediate
+error rather than a silent fallback to sequential. Why this helps: on a
+large share the bottleneck is almost always I/O latency (a network
+round-trip per ACL read, plus AD round-trips the first time each identity
+is seen), not CPU, so doing several of those waits at once can cut
+wall-clock time substantially. Only the expensive per-object work is
+parallelized; directory/file discovery itself stays sequential (cheap,
+and keeps `-BreadthFirst`/`-MaxDepth`/`-NoRecursion` behaving exactly as
+documented). Two caches -- a Sid-to-Name/Type label cache and a
+group-membership-expansion cache -- are shared across all workers via a
+thread-safe `ConcurrentDictionary`, so the cross-object caching benefit
+that already existed sequentially isn't lost under parallelism; both
+deliberately hold only plain data, never a live AD object, since those
+aren't safe to use from a thread other than the one that resolved them.
+
+**The honest performance finding, measured rather than assumed**:
+`ForEach-Object -Parallel` has its own fixed per-item dispatch overhead
+(on the order of a couple of milliseconds each). Whether `-ThrottleLimit`
+helps or actively hurts depends entirely on whether your real per-object
+ACL-read latency exceeds that overhead. Testing against a synthetic
+15ms-per-item delay (a plausible stand-in for a real SMB round-trip),
+`-ThrottleLimit 16` measured roughly **6x faster** than sequential for
+the same workload. Testing against near-zero-latency work (nothing to
+actually wait on), the fixed per-item overhead made parallel processing
+measurably *slower* than sequential -- not just "no better." There's no
+free lunch here: **benchmark `-ThrottleLimit` against a small,
+representative sample of your actual share before committing to a value
+for a multi-hour scan**, since the right answer depends on your network,
+file server, and AD topology, not just the size of the tree. A reasonable
+starting point to try is somewhere in the 4-16 range; a heavily-loaded or
+older file server can itself become the bottleneck (or start throttling
+connections) under too much concurrent load, so higher isn't automatically
+better.
 
 `-Verbose` is the standard PowerShell common parameter and prints per-folder
 traversal, every ACL read, cache hits/misses on identity resolution,

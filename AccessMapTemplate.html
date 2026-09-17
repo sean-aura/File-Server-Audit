@@ -1217,7 +1217,8 @@ function computeStaleAccessCounts() {
 function renderDonutChart(segments, size) {
   size = size || 200;
   const R = size / 2 - 28, strokeW = 24, cx = size / 2, cy = size / 2;
-  const total = segments.reduce((s, x) => s + x.count, 0) || 1;
+  const realTotal = segments.reduce((s, x) => s + x.count, 0);
+  const total = realTotal || 1; // safe denominator only -- never used for display
   const C = 2 * Math.PI * R;
   let offset = 0;
   const svg = svgEl('svg', { viewBox: `0 0 ${size} ${size}`, width: size, height: size });
@@ -1238,7 +1239,7 @@ function renderDonutChart(segments, size) {
     offset += frac * C;
   });
   const centerText = svgEl('text', { x: cx, y: cy, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': 15, fill: '#e6e9ee' });
-  centerText.textContent = String(total);
+  centerText.textContent = String(realTotal);
   svg.appendChild(centerText);
   return svg;
 }

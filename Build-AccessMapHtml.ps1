@@ -81,7 +81,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap.html
 
 .NOTES
-    Version: 0.2.2
+    Version: 0.3.0
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -104,7 +104,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.2.2'
+$ScriptVersion = '0.3.0'
 
 $ErrorActionPreference = 'Stop'
 
@@ -114,11 +114,19 @@ $InputFolder = (Resolve-Path -LiteralPath $InputFolder).ProviderPath
 # IdentityPermissions_20260910_211500.csv), so find the matching file(s) by pattern
 # rather than assuming a fixed name. A legacy fixed name is still accepted as a
 # fallback (e.g. a file that was manually renamed).
+function Get-RunTimestampFromName {
+    # Extracts the run timestamp embedded in an audit output filename (the
+    # yyyyMMdd_HHmmss immediately before the extension). Returns $null for a
+    # name that doesn't carry one (e.g. a manually renamed legacy file).
+    param([Parameter(Mandatory)][string]$FileName)
+    if ($FileName -match '_(\d{8}_\d{6})\.(csv|log)$') { return $Matches[1] }
+    return $null
+}
+
 function Find-LatestRunFile {
     param([Parameter(Mandatory)][string]$Prefix, [switch]$Required)
 
-    $candidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter "$Prefix*.csv" -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending)
+    $candidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter "$Prefix*.csv" -File -ErrorAction SilentlyContinue)
 
     if ($candidates.Count -eq 0) {
         $legacy = Join-Path $InputFolder "$Prefix.csv"
@@ -126,24 +134,49 @@ function Find-LatestRunFile {
         if ($Required) { throw "$Prefix*.csv not found in '$InputFolder'. Run Invoke-NTFSPermissionAudit.ps1 first." }
         return $null
     }
-    if ($candidates.Count -gt 1) {
-        Write-Warning "Multiple $Prefix*.csv files found in '$InputFolder' (output from more than one audit run?). Using the most recent: $($candidates[0].Name). Point -InputFolder at a folder containing just the run you want if this isn't what you intended."
+    # Sort by the run timestamp EMBEDDED IN THE FILENAME, not filesystem
+    # LastWriteTime -- when -InputFolder holds more than one run's output,
+    # LastWriteTime can disagree with which run a file actually belongs to
+    # (a file copied, restored from backup, or touched later than it was
+    # written), which would otherwise risk silently pairing IdentityPermissions
+    # from one run with ADIdentityDetails from a completely different one.
+    # A file whose name doesn't carry a recognizable timestamp (legacy/manually
+    # renamed) falls back to LastWriteTime, since there's nothing more
+    # authoritative to sort it by.
+    $sorted = $candidates | Sort-Object -Descending -Property @{
+        Expression = {
+            $ts = Get-RunTimestampFromName $_.Name
+            if ($ts) { $ts } else { $_.LastWriteTime.ToString('yyyyMMdd_HHmmss') }
+        }
     }
-    return $candidates[0].FullName
+    if ($sorted.Count -gt 1) {
+        Write-Warning "Multiple $Prefix*.csv files found in '$InputFolder' (output from more than one audit run?). Using the most recent by run timestamp: $($sorted[0].Name). Point -InputFolder at a folder containing just the run you want if this isn't what you intended."
+    }
+    return $sorted[0].FullName
 }
 
 $identityPermsFile = Find-LatestRunFile -Prefix 'IdentityPermissions' -Required
 $identityPermsPath = $identityPermsFile
 $adDetailsPath     = Find-LatestRunFile -Prefix 'ADIdentityDetails'
 $errorsLogPath     = $null
-$errorsLogCandidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter 'Errors_*.log' -File -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending)
+$errorsLogCandidates = @(Get-ChildItem -LiteralPath $InputFolder -Filter 'Errors_*.log' -File -ErrorAction SilentlyContinue)
 if ($errorsLogCandidates.Count -eq 0) {
     $legacyErrorsLog = Join-Path $InputFolder 'Errors.log'
     if (Test-Path -LiteralPath $legacyErrorsLog) { $errorsLogPath = $legacyErrorsLog }
 }
 else {
-    $errorsLogPath = $errorsLogCandidates[0].FullName
+    # Same reasoning as Find-LatestRunFile above: sort by the run timestamp
+    # embedded in the filename, not filesystem LastWriteTime.
+    $errorsSorted = $errorsLogCandidates | Sort-Object -Descending -Property @{
+        Expression = {
+            $ts = Get-RunTimestampFromName $_.Name
+            if ($ts) { $ts } else { $_.LastWriteTime.ToString('yyyyMMdd_HHmmss') }
+        }
+    }
+    if ($errorsSorted.Count -gt 1) {
+        Write-Warning "Multiple Errors_*.log files found in '$InputFolder' (output from more than one audit run?). Using the most recent by run timestamp: $($errorsSorted[0].Name)."
+    }
+    $errorsLogPath = $errorsSorted[0].FullName
 }
 
 # Reuse the source run's timestamp for the default output file name too, so the

@@ -2,6 +2,84 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - Parallel processing, plus three real bugs found by a deliberate code-review pass
+
+### Added
+- `Invoke-NTFSPermissionAudit.ps1`: new `-ThrottleLimit N` switch. Processes
+  N objects' ACL reads and identity resolution concurrently instead of one
+  at a time. Requires PowerShell 7+ (a clear, immediate error under Windows
+  PowerShell 5.1, never a silent fallback); default remains 1 (fully
+  sequential, unchanged behavior). Only per-object ACL/identity work is
+  parallelized -- directory discovery stays sequential, so `-BreadthFirst`/
+  `-MaxDepth`/`-NoRecursion` behave identically either way. Two
+  thread-safe `ConcurrentDictionary` caches (identity Name/Type labels;
+  group-membership expansion results) are shared across workers, holding
+  only plain data -- never a live AD `Principal`/`DirectoryEntry` object,
+  since those aren't safe to use from a thread other than the one that
+  resolved them.
+- **Measured, not assumed, performance characteristic** (documented in the
+  parameter help and README): against a synthetic 15ms-per-item delay
+  standing in for a real network ACL round-trip, `-ThrottleLimit 16`
+  measured roughly 6x faster than sequential. Against near-zero-latency
+  work, the fixed per-item dispatch overhead of `ForEach-Object -Parallel`
+  made parallel processing measurably *slower* than sequential --
+  documented plainly rather than oversold, with a recommendation to
+  benchmark against a representative sample before committing to a value
+  for a multi-hour scan.
+
+### Fixed -- found during a deliberate, requested code-review pass, not reported bugs
+- **`ADIdentityDetails.csv` would come out completely empty under
+  `-ThrottleLimit`.** Parallel workers resolve identities into fresh,
+  throwaway per-item caches, never into the persistent `$script:IdentityCache`
+  that the final identity-details report reads from -- and the shared cache
+  deliberately excludes live AD objects for thread-safety, so it can't
+  substitute either. Fixed by re-resolving every distinct identity
+  encountered (from the shared cache's keys) once, sequentially, on the
+  main thread, after the parallel scan completes -- exactly what would
+  have happened inline during a sequential scan, just deferred. Verified
+  the fix's logic with a mock test, since the real Windows security APIs
+  this depends on (SecurityIdentifier, AD PrincipalContext) are entirely
+  unsupported outside Windows, not just the filesystem-ACL-reading part.
+- **`Build-AccessMapHtml.ps1` could silently pair CSVs from two different
+  audit runs.** When `-InputFolder` held output from more than one run,
+  file discovery picked "most recent by filesystem `LastWriteTime`"
+  independently for `IdentityPermissions*.csv`, `ADIdentityDetails*.csv`,
+  and `Errors_*.log` -- which can disagree with which run a file actually
+  belongs to (a file copied, restored from backup, or touched later than
+  it was written). Reproduced live with a deliberately constructed
+  mismatched-mtime scenario (confirmed it really did pick mismatched
+  files, not just a theoretical risk), then fixed by sorting on the run
+  timestamp embedded in each filename instead, which is authoritative and
+  unaffected by filesystem metadata. Added as a permanent regression test.
+- **Summary view's access-rights donut chart showed "1" instead of "0"**
+  for a dataset with zero access entries. The divide-by-zero-safe
+  denominator (falls back to 1 to avoid a `NaN` percentage) was being
+  reused for the chart's displayed total as well, which is factually wrong
+  when the real total is genuinely zero. Fixed by tracking the real total
+  separately from the safe-for-division one.
+
+### Testing notes
+- The code review was a genuine line-by-line pass across all four files
+  (both PowerShell scripts touched recently, `Get-FileServerShareInventory.ps1`,
+  and `AccessMapTemplate.html`), not a superficial scan -- each of the three
+  fixes above was found by reading the code critically enough to predict a
+  failure mode, then actually reproducing it (via a targeted mock, a
+  deliberately constructed mismatched-mtime scenario, or a zero-edges
+  dataset) before fixing it, rather than fixing based on suspicion alone.
+- Also specifically checked (found clean, no changes needed): HTML-escaping
+  of all user/AD-derived data rendered via `innerHTML` throughout
+  `AccessMapTemplate.html`; CSV-export quoting for embedded commas/quotes/
+  newlines; the `-ExpandGroupsExclude` short-name-vs-full-name matching
+  logic; `computeTopmostRoots`'s ancestor-chain walk; CIM session cleanup
+  and DFS namespace traversal in `Get-FileServerShareInventory.ps1`.
+- Re-ran the full existing suite (12 HTML/JS test files, 3 PowerShell test
+  files) after every fix, plus real end-to-end runs at scale (a
+  2,501-folder synthetic tree) across sequential, breadth-first, parallel,
+  and parallel+breadth-first combined -- all four modes still produce
+  identical, complete coverage.
+
+---
+
 ## [0.2.2] - Breadth-first scan order option
 
 ### Added
