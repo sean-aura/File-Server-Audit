@@ -81,7 +81,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap.html
 
 .NOTES
-    Version: 0.3.0
+    Version: 0.5.0
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -104,7 +104,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.3.0'
+$ScriptVersion = '0.5.0'
 
 $ErrorActionPreference = 'Stop'
 
@@ -185,6 +185,23 @@ else {
 # legacy fixed-name fallback, or was renamed).
 $RunTimestamp = if ($identityPermsFile -match '_(\d{8}_\d{6})\.csv$') { $Matches[1] } else { Get-Date -Format 'yyyyMMdd_HHmmss' }
 
+# A run that was interrupted (killed, crashed, machine rebooted) before
+# finishing never gets to write Completed_<timestamp>.marker -- its absence is
+# how -Resume itself knows there's something to continue, and it's exactly as
+# useful a signal here: if it's missing, the CSVs this HTML is built from are
+# real and not corrupt, just incomplete (some part of the tree was never
+# reached). Only checked when the run's own timestamp was actually
+# identifiable above; a legacy/renamed file has no timestamp to look up a
+# marker for, so completeness simply can't be determined for it either way.
+$scanComplete = $true
+if ($identityPermsFile -match '_(\d{8}_\d{6})\.csv$') {
+    $completedMarkerPath = Join-Path $InputFolder "Completed_$RunTimestamp.marker"
+    $scanComplete = Test-Path -LiteralPath $completedMarkerPath
+    if (-not $scanComplete) {
+        Write-Warning "No Completed_$RunTimestamp.marker found -- this run appears to have been interrupted before finishing. The report will say so and show everything that WAS captured."
+    }
+}
+
 # Resolve -OutputHtmlPath into a concrete target file path:
 #   - a path ending in an existing/creatable file name -> used exactly as given
 #   - an existing, EMPTY directory -> a timestamped file name is generated inside it
@@ -213,14 +230,52 @@ if ((Test-Path -LiteralPath $OutputHtmlPath) -and -not $Force) {
 }
 
 Write-Host "Build-AccessMapHtml v$ScriptVersion" -ForegroundColor Cyan
+
+# A process killed mid-write can leave a CSV's LAST line truncated -- cut off
+# anywhere in it, not necessarily in a way that nulls out a specific field
+# (confirmed directly: chopping through the middle of a quoted field's TEXT
+# just silently shortens that one value, e.g. "This folder, subfolders and
+# files" becomes "This folder, sub" -- Import-Csv has no way to know that
+# wasn't the real value). The robust, general signal isn't "is some field
+# null" but simply: does the raw file end with a newline at all? A properly
+# completed row always does (checked directly against real Export-Csv output
+# on this platform, which turned out to use bare LF rather than CRLF --
+# checking only for the trailing LF byte, not CRLF specifically, is what
+# makes this portable across that difference); a row cut off mid-write by a
+# killed process essentially never does, regardless of which field or how
+# much of it got cut.
+$script:truncatedRowsDropped = 0
+function Import-CsvRobust {
+    param([Parameter(Mandatory)][string]$Path)
+    $rows = @(Import-Csv -LiteralPath $Path)
+    if ($rows.Count -eq 0) { return $rows }
+
+    $endsWithNewline = $false
+    $fs = [System.IO.File]::OpenRead($Path)
+    try {
+        if ($fs.Length -gt 0) {
+            $fs.Seek(-1, [System.IO.SeekOrigin]::End) | Out-Null
+            $endsWithNewline = ($fs.ReadByte() -eq 10)   # LF; also the last byte of a CRLF ending
+        }
+    }
+    finally { $fs.Dispose() }
+
+    if (-not $endsWithNewline) {
+        Write-Warning "'$Path' doesn't end with a newline -- looks like the file was truncated mid-write (a killed/crashed run). Dropping that one incomplete last row; everything else in the file is unaffected."
+        $script:truncatedRowsDropped++
+        return $rows[0..($rows.Count - 2)]
+    }
+    return $rows
+}
+
 Write-Host "Reading $identityPermsPath ..." -ForegroundColor Cyan
-$permRows = Import-Csv -LiteralPath $identityPermsPath
+$permRows = Import-CsvRobust -Path $identityPermsPath
 Write-Verbose "Loaded $($permRows.Count) permission row(s)."
 
 $adDetails = @{}
 if ($adDetailsPath -and (Test-Path -LiteralPath $adDetailsPath)) {
     Write-Host "Reading $adDetailsPath ..." -ForegroundColor Cyan
-    foreach ($row in (Import-Csv -LiteralPath $adDetailsPath)) {
+    foreach ($row in (Import-CsvRobust -Path $adDetailsPath)) {
         if ($row.IdentitySid) { $adDetails[$row.IdentitySid] = $row }
     }
     Write-Verbose "Loaded AD details for $($adDetails.Count) identity(ies)."
@@ -398,6 +453,8 @@ $dataObject = [ordered]@{
     sourceFolder = $InputFolder
     toolkitVersion = $ScriptVersion
     scanErrors = $scanErrors
+    scanComplete = $scanComplete
+    truncatedRowsDropped = $script:truncatedRowsDropped
 }
 Write-Verbose "Serializing to JSON..."
 $json = $dataObject | ConvertTo-Json -Depth 6 -Compress

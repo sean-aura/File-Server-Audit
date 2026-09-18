@@ -96,6 +96,8 @@
   .chartLegend .legendRow { display:flex; align-items:center; gap:8px; padding:3px 0; }
   .legendSwatch { width:11px; height:11px; border-radius:2px; flex-shrink:0; }
   .disclaimerBanner { background:#2a2410; border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:10px 14px; font-size:12px; margin-bottom:16px; }
+  .incompleteBanner { background:#3a1a1a; border:1px solid var(--bad); color:#ff9d9d; border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; font-weight:500; }
+  .headerIncompleteBadge { background:var(--bad); color:#fff; font-size:11px; font-weight:600; padding:3px 9px; border-radius:10px; margin-left:6px; }
   .obsCard { border-left:3px solid var(--warn); background:var(--panel2); border-radius:0 6px 6px 0; padding:10px 14px; margin-bottom:10px; }
   .obsCard .obsTitle { font-weight:600; font-size:13px; margin-bottom:4px; }
   .obsCard .obsWhy { font-size:12px; color:var(--muted); margin-bottom:6px; }
@@ -133,6 +135,7 @@
   <header>
     <h1>File Server Access Map</h1>
     <button id="summaryBtn">Summary</button>
+    <span id="headerIncompleteBadge" style="display:none;" class="headerIncompleteBadge" title="Click Summary for details">Incomplete data</span>
     <button id="backBtn" disabled>&larr; Back</button>
     <div class="quickfilters">
       <button id="btnBroken" class="warnbtn">Broken inheritance folders</button>
@@ -1474,6 +1477,20 @@ function renderSummaryView() {
   const content = document.getElementById('content');
   content.innerHTML = '';
 
+  if (DATA.scanComplete === false || (DATA.truncatedRowsDropped || 0) > 0) {
+    const banner = document.createElement('div');
+    banner.className = 'incompleteBanner';
+    const parts = [];
+    if (DATA.scanComplete === false) {
+      parts.push("This scan appears to have been interrupted before finishing (killed, crashed, or the machine rebooted mid-run) -- some folders may be missing entirely, not just from this report but from the underlying data. Everything that WAS successfully captured is still shown below and throughout.");
+    }
+    if ((DATA.truncatedRowsDropped || 0) > 0) {
+      parts.push(`${DATA.truncatedRowsDropped} source file(s) had their last line cut off mid-write (consistent with the same kind of interruption) -- that one incomplete row was dropped; nothing else in those files was affected.`);
+    }
+    banner.textContent = '\u26a0 ' + parts.join(' ');
+    content.appendChild(banner);
+  }
+
   const idBreakdown = computeIdentityBreakdown();
   const userHealth = computeUserHealth();
   const rights = computeRightsDistribution();
@@ -1655,6 +1672,13 @@ function init() {
   document.getElementById('summaryBtn').onclick = renderSummaryView;
   document.getElementById('btnBroken').onclick = filterToBrokenFolders;
   document.getElementById('btnDormant').onclick = filterToDormantIdentities;
+
+  if (DATA.scanComplete === false || (DATA.truncatedRowsDropped || 0) > 0) {
+    const badge = document.getElementById('headerIncompleteBadge');
+    badge.style.display = 'inline-block';
+    badge.style.cursor = 'pointer';
+    badge.onclick = renderSummaryView;
+  }
 
   document.getElementById('footerLine').textContent =
     `Generated ${DATA.generatedAt} from ${DATA.sourceFolder} (toolkit v${DATA.toolkitVersion || '?'}) \u2014 point-in-time snapshot, not live data.`;

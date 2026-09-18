@@ -2,6 +2,79 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - Crash recovery (-Resume) and incomplete/truncated-data handling
+
+### Added
+- `Invoke-NTFSPermissionAudit.ps1`: new `-Resume` switch. Continues a run
+  that was interrupted (killed, crashed, the machine rebooted) before
+  finishing, instead of starting the whole scan over. Requires an explicit
+  `-OutputFolder` pointing at the same folder the interrupted run used
+  (the default value bakes in the current timestamp, so relying on it here
+  would point at a brand-new empty folder instead).
+  - Every run now writes `RunConfig_<timestamp>.json` (every parameter
+    that affects what gets scanned or how -- Path, MaxDepth, BreadthFirst,
+    ThrottleLimit, ExpandGroups, etc.) and `Checkpoint_<timestamp>.txt`
+    (every object fully processed and durably flushed to the CSVs). A
+    finished run also gets `Completed_<timestamp>.marker`.
+  - `-Resume` finds the most recent run without a matching Completed
+    marker, validates every parameter from this invocation against
+    RunConfig, and refuses with a specific, itemized error if anything
+    differs -- never guesses which settings should win.
+  - `Flush-Buffers` was restructured to use a single unified "items
+    completed" trigger instead of three independent per-CSV row-count
+    thresholds, specifically so a checkpoint entry is only ever written
+    once that item's row data (if any) is confirmed durably on disk --
+    an item can legitimately produce rows in one CSV and none in another
+    (or none at all), so a per-buffer trigger could otherwise leave a
+    completed item's checkpoint entry pending indefinitely.
+  - Fixed, as part of building this: `ADIdentityDetails.csv` would have
+    been silently overwritten (losing the original run's identity data)
+    on a resumed run, since its Export-Csv call didn't previously know to
+    append.
+  - Documented trade-off: an object already scanned before the
+    interruption is not re-checked on resume, even if it changed in the
+    meantime.
+- `Build-AccessMapHtml.ps1` / `AccessMapTemplate.html`: the report now
+  detects and clearly flags two distinct ways source data can be
+  incomplete, while still showing everything successfully captured:
+  - **An interrupted scan** -- no matching `Completed_<timestamp>.marker`
+    for the run's own timestamp.
+  - **A truncated source file** -- a CSV whose last line was cut off
+    mid-write (a killed process, not a normal completion). Detected by
+    checking whether the raw file ends with a newline at all, rather than
+    checking for `null` in specific fields -- a truncation partway through
+    a field's *text* just silently shortens that value without producing
+    any `null`, so a null-only check would miss it; the newline check
+    catches truncation regardless of where in the row it happened. The one
+    affected row is dropped; nothing else in the file is touched.
+  - Surfaced as a prominent banner at the top of the Summary view plus a
+    small persistent badge next to the Summary button, visible from any
+    view in the report.
+
+### Testing notes
+- Crash recovery was tested against **real interruptions**, not simulated
+  ones: `kill -9` sent to the actual process mid-scan at several points
+  (including deliberately between one checkpoint flush and the next, so
+  some objects are processed but not yet durable when killed), across
+  both sequential and `-ThrottleLimit` (parallel) modes. In every case,
+  the resumed run's final checkpoint is byte-for-byte identical (as a set)
+  to a fresh, uninterrupted run of the same tree -- no gaps, no duplicate
+  entries. Also confirmed: resuming an already-completed run refuses
+  clearly; resuming with a changed parameter (tested with `-BreadthFirst`)
+  refuses and names the mismatch; resuming without an explicit
+  `-OutputFolder` refuses before touching anything.
+- The truncated-file detection was verified against the actual observed
+  behavior of `Import-Csv` on a genuinely truncated file (confirmed
+  directly: it never throws, and a truncation can produce either a `null`
+  trailing field or a silently shortened string value depending on
+  exactly where it lands) rather than assumed, which is what led to
+  redesigning the detection from a field-null check to the more general
+  trailing-newline check.
+- Full existing suite (13 HTML/JS files, 4 PowerShell/shell files) re-run
+  clean after every change in this release.
+
+---
+
 ## [0.3.0] - Parallel processing, plus three real bugs found by a deliberate code-review pass
 
 ### Added

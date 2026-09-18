@@ -209,6 +209,40 @@
     already exists anyway (e.g. two runs started within the same second); without it,
     the script errors rather than silently overwriting.
 
+.PARAMETER Resume
+    Continue a previous run of this exact same command that was interrupted before
+    finishing (killed, crashed, the machine rebooted mid-scan) instead of starting
+    over from scratch. REQUIRES an explicit -OutputFolder pointing at the SAME
+    folder the interrupted run used -- -OutputFolder's default value bakes in the
+    current timestamp, so relying on the default here would almost certainly point
+    at a brand-new, empty folder with nothing to resume; the script errors clearly
+    rather than silently scanning into the wrong place.
+
+    How it works: every run writes a small RunConfig_<timestamp>.json capturing
+    every parameter that affects WHAT gets scanned or how (Path, IncludeFiles,
+    MaxDepth, BreadthFirst, ExpandGroups, ThrottleLimit, and so on), and a
+    Checkpoint_<timestamp>.txt recording every object that's been fully processed
+    AND had its rows durably written to the CSVs (never marked complete before
+    that, specifically so a crash between "processed" and "written to disk" can't
+    silently lose data -- worst case, that one object's work is simply redone).
+    -Resume finds the most recent run in -OutputFolder that doesn't have a
+    matching Completed_<timestamp>.marker (i.e., didn't finish), validates that
+    EVERY tracked parameter from this invocation matches what RunConfig recorded
+    -- if anything differs (a different -Path, -ThrottleLimit, -BreadthFirst,
+    etc.), it refuses with a clear error listing exactly what changed, rather than
+    silently producing a scan that's inconsistent with itself -- then continues
+    appending to that same run's CSVs, skipping anything already in the
+    checkpoint.
+
+    The trade-off you're accepting by using this (rather than just re-running from
+    scratch): anything already scanned before the interruption is NOT re-checked,
+    even if it was actually modified in the meantime -- a folder whose permissions
+    changed five minutes after it was scanned, then again before the resumed run
+    finishes the rest of the tree, would still show its OLDER permissions from the
+    first pass. For most large-scan interruption scenarios this is exactly the
+    right trade-off (redoing the whole scan costs far more than this staleness
+    risk), but it's worth knowing about explicitly.
+
 .EXAMPLE
     .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -ExpandGroups
 
@@ -219,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.3.0
+    Version: 0.5.0
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -278,12 +312,14 @@ param(
 
     [switch]$NoAdLookup,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$Resume
 )
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.3.0'
+$ScriptVersion = '0.5.0'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -324,36 +360,131 @@ if ($NoRecursion) {
 }
 Write-Verbose "Effective settings: MaxDepth=$MaxDepth  IncludeFiles=$IncludeFiles  IncludeInheritedFileAces=$IncludeInheritedFileAces  ExpandGroups=$ExpandGroups  NoAdLookup=$NoAdLookup"
 
+if ($Resume -and -not $PSBoundParameters.ContainsKey('OutputFolder')) {
+    throw "-Resume requires an explicit -OutputFolder pointing at the SAME folder the interrupted run used. -OutputFolder's default value bakes in the current timestamp, so without an explicit value here, -Resume would almost certainly look in a brand-new, empty folder rather than the one you meant to continue."
+}
+
 if (-not (Test-Path -LiteralPath $OutputFolder)) {
+    if ($Resume) { throw "-Resume was specified but -OutputFolder '$OutputFolder' does not exist -- nothing to resume there." }
     New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
 }
 $OutputFolder = (Resolve-Path -LiteralPath $OutputFolder).ProviderPath
 
-# Every output file gets the same run timestamp in its name, so re-running into a
-# fixed/shared -OutputFolder never silently collides with (or overwrites) a
-# previous run's files -- each run's files are self-identifying even if moved
-# elsewhere later.
-$RunTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+# Every parameter that affects WHAT gets scanned or HOW -- not cosmetic things
+# like -Force. Sorted/normalized so two equivalent invocations (e.g. -NoRecursion
+# vs. an explicit -MaxDepth 0, or -Path roots given in a different order) compare
+# equal rather than failing a resume over a difference that doesn't actually
+# change the scan.
+function Get-EffectiveRunConfig {
+    [ordered]@{
+        Path                     = @($Path | Sort-Object)
+        IncludeFiles             = [bool]$IncludeFiles
+        IncludeInheritedFileAces = [bool]$IncludeInheritedFileAces
+        MaxDepth                 = $MaxDepth
+        BreadthFirst             = [bool]$BreadthFirst
+        ThrottleLimit            = $ThrottleLimit
+        ExpandGroups             = [bool]$ExpandGroups
+        ExpandGroupsExclude      = @($ExpandGroupsExclude | Sort-Object)
+        SkipInheritedAces        = [bool]$SkipInheritedAces
+        NoAdLookup               = [bool]$NoAdLookup
+    }
+}
+$effectiveConfig = Get-EffectiveRunConfig
+
+if ($Resume) {
+    # Find the most recent run in this folder that has a RunConfig but no
+    # matching Completed marker -- i.e., started but never finished. Sorted by
+    # the timestamp embedded in the filename (not filesystem LastWriteTime),
+    # same reasoning as Build-AccessMapHtml.ps1's file discovery: filesystem
+    # metadata can disagree with which run a file actually belongs to.
+    $runConfigCandidates = @(Get-ChildItem -LiteralPath $OutputFolder -Filter 'RunConfig_*.json' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^RunConfig_(\d{8}_\d{6})\.json$' } |
+        Sort-Object -Descending -Property @{ Expression = { $Matches[1] } })
+
+    $resumeTarget = $null
+    foreach ($candidate in $runConfigCandidates) {
+        $ts = [regex]::Match($candidate.Name, '^RunConfig_(\d{8}_\d{6})\.json$').Groups[1].Value
+        $markerPath = Join-Path $OutputFolder "Completed_$ts.marker"
+        if (-not (Test-Path -LiteralPath $markerPath)) {
+            $resumeTarget = @{ Timestamp = $ts; ConfigPath = $candidate.FullName }
+            break
+        }
+    }
+    if (-not $resumeTarget) {
+        throw "-Resume was specified but no incomplete run was found in '$OutputFolder' (either there's no previous run here at all, or every run here already finished -- check for a RunConfig_*.json with no matching Completed_*.marker). Omit -Resume to start a fresh run."
+    }
+
+    $savedConfig = Get-Content -LiteralPath $resumeTarget.ConfigPath -Raw | ConvertFrom-Json
+    $mismatches = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $effectiveConfig.Keys) {
+        $savedVal = $savedConfig.$key
+        $currentVal = $effectiveConfig[$key]
+        # ConvertFrom-Json turns a saved array into an array too, but comparing
+        # arrays with -ne / -eq is unreliable in PowerShell, so compare their
+        # joined-string form -- fine here since these are all short lists of
+        # simple strings/paths, not data where that could hide a real difference.
+        $savedCmp   = if ($savedVal -is [array]) { ($savedVal -join '|') } else { "$savedVal" }
+        $currentCmp = if ($currentVal -is [array]) { ($currentVal -join '|') } else { "$currentVal" }
+        if ($savedCmp -ne $currentCmp) {
+            $mismatches.Add("  -$key : was [$savedCmp], now [$currentCmp]")
+        }
+    }
+    if ($mismatches.Count -gt 0) {
+        throw "-Resume was specified, but this invocation's parameters don't match the run being resumed (RunConfig_$($resumeTarget.Timestamp).json). Resuming with different parameters would produce a scan that's inconsistent with itself, so this refuses rather than guessing which settings should win. Differences found:`n$($mismatches -join "`n")`nEither match the original invocation exactly, or omit -Resume to start a fresh run (in a different -OutputFolder, or with -Force in this one)."
+    }
+
+    $RunTimestamp = $resumeTarget.Timestamp
+    Write-Host "Resuming run $RunTimestamp (all parameters match; continuing where it left off)." -ForegroundColor Cyan
+}
+else {
+    $RunTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+}
 
 $FolderReportPath      = Join-Path $OutputFolder "FolderPermissions_$RunTimestamp.csv"
 $IdentityReportPath    = Join-Path $OutputFolder "IdentityPermissions_$RunTimestamp.csv"
 $InheritanceExceptions = Join-Path $OutputFolder "InheritanceExceptions_$RunTimestamp.csv"
 $IdentityDetailsPath   = Join-Path $OutputFolder "ADIdentityDetails_$RunTimestamp.csv"
 $ErrorLogPath          = Join-Path $OutputFolder "Errors_$RunTimestamp.log"
+$RunConfigPath         = Join-Path $OutputFolder "RunConfig_$RunTimestamp.json"
+$CheckpointPath        = Join-Path $OutputFolder "Checkpoint_$RunTimestamp.txt"
+$CompletedMarkerPath   = Join-Path $OutputFolder "Completed_$RunTimestamp.marker"
 
-# Because names are timestamped, a collision should only happen if two runs
-# somehow started in the same second targeting the same folder. Rather than
-# silently overwrite (the previous behavior when -OutputFolder was reused),
-# refuse and require -Force -- an accidental silent overwrite of audit
-# evidence is worse than a rare, easily-retried error.
-$existingOutputs = @(@($FolderReportPath, $IdentityReportPath, $InheritanceExceptions, $IdentityDetailsPath, $ErrorLogPath) |
-    Where-Object { Test-Path -LiteralPath $_ })
-if ($existingOutputs.Count -gt 0 -and -not $Force) {
-    throw "Output file(s) already exist and -Force was not specified: $($existingOutputs -join ', '). This is unusual given the timestamped filenames -- if you intend to overwrite them, re-run with -Force."
+# $script:CompletedPaths / $script:HeaderWritten flags for the three main CSVs
+# are all set up below, branching on fresh-vs-resumed, before the collision
+# check -- a resumed run is SUPPOSED to find its own files already there.
+$script:CompletedItemPaths = New-Object System.Collections.Generic.HashSet[string]
+if ($Resume) {
+    if (Test-Path -LiteralPath $CheckpointPath) {
+        foreach ($line in (Get-Content -LiteralPath $CheckpointPath)) {
+            if ($line) { [void]$script:CompletedItemPaths.Add($line) }
+        }
+    }
+    Write-Host "Loaded checkpoint: $($script:CompletedItemPaths.Count) object(s) already completed and will be skipped." -ForegroundColor Cyan
+    # The files already exist with headers from the original run -- Flush-Buffers
+    # must APPEND from the first flush onward, never re-create/overwrite them.
+    $script:FolderHeaderWritten   = $true
+    $script:IdentityHeaderWritten = $true
+    $script:InheritHeaderWritten  = $true
 }
-if ($existingOutputs.Count -gt 0 -and $Force) {
-    Write-Warning "Overwriting $($existingOutputs.Count) existing output file(s) because -Force was specified."
-    foreach ($f in $existingOutputs) { Remove-Item -LiteralPath $f -Force }
+else {
+    # Because names are timestamped, a collision should only happen if two runs
+    # somehow started in the same second targeting the same folder. Rather than
+    # silently overwrite (the previous behavior when -OutputFolder was reused),
+    # refuse and require -Force -- an accidental silent overwrite of audit
+    # evidence is worse than a rare, easily-retried error.
+    $existingOutputs = @(@($FolderReportPath, $IdentityReportPath, $InheritanceExceptions, $IdentityDetailsPath, $ErrorLogPath) |
+        Where-Object { Test-Path -LiteralPath $_ })
+    if ($existingOutputs.Count -gt 0 -and -not $Force) {
+        throw "Output file(s) already exist and -Force was not specified: $($existingOutputs -join ', '). This is unusual given the timestamped filenames -- if you intend to overwrite them, re-run with -Force."
+    }
+    if ($existingOutputs.Count -gt 0 -and $Force) {
+        Write-Warning "Overwriting $($existingOutputs.Count) existing output file(s) because -Force was specified."
+        foreach ($f in $existingOutputs) { Remove-Item -LiteralPath $f -Force }
+    }
+    $effectiveConfig | ConvertTo-Json | Set-Content -LiteralPath $RunConfigPath -Encoding UTF8
+    $script:FolderHeaderWritten   = $false
+    $script:IdentityHeaderWritten = $false
+    $script:InheritHeaderWritten  = $false
 }
 
 $adAvailable = $false
@@ -907,35 +1038,53 @@ function Get-ObjectAcl {
 $script:FolderRows   = New-Object System.Collections.Generic.List[object]
 $script:IdentityRows = New-Object System.Collections.Generic.List[object]
 $script:InheritRows  = New-Object System.Collections.Generic.List[object]
+$script:PendingCompletedPaths = New-Object System.Collections.Generic.List[string]
 $script:FlushEvery    = 2000
 $script:FolderHeaderWritten   = $false
 $script:IdentityHeaderWritten = $false
 $script:InheritHeaderWritten  = $false
 
 function Flush-Buffers {
+    <#
+        All four buffers (three CSV row-lists plus pending checkpoint paths)
+        flush TOGETHER as one unit, triggered by how many ITEMS have completed
+        since the last flush -- not by each buffer's own row count
+        independently. This matters for -Resume correctness: an item can
+        legitimately produce rows in one CSV and none in another (or none at
+        all, e.g. every one of its ACEs got filtered out by
+        -SkipInheritedAces), so a per-buffer trigger could flush
+        FolderRows/IdentityRows while an item's checkpoint entry -- which must
+        only ever be written once ALL of that item's row data (if any) is
+        confirmed on disk -- gets left pending. Flushing everything as one
+        unit sidesteps that entirely: checkpoint paths are always written
+        last, after all three CSVs, so a crash between "processed" and
+        "written to disk" can never leave a path marked complete whose data
+        was actually lost -- worst case, whatever's still pending gets redone
+        on resume, which is always safe.
+    #>
     param([switch]$Force)
 
-    if ($Force -or $script:FolderRows.Count -ge $script:FlushEvery) {
-        if ($script:FolderRows.Count -gt 0) {
-            Write-Verbose "Flushing $($script:FolderRows.Count) row(s) to $FolderReportPath"
-            $script:FolderRows | Export-Csv -LiteralPath $FolderReportPath -NoTypeInformation -Append:$script:FolderHeaderWritten
-            $script:FolderHeaderWritten = $true
-            $script:FolderRows.Clear()
-        }
+    if (-not ($Force -or $script:PendingCompletedPaths.Count -ge $script:FlushEvery)) { return }
+
+    if ($script:FolderRows.Count -gt 0) {
+        Write-Verbose "Flushing $($script:FolderRows.Count) row(s) to $FolderReportPath"
+        $script:FolderRows | Export-Csv -LiteralPath $FolderReportPath -NoTypeInformation -Append:$script:FolderHeaderWritten
+        $script:FolderHeaderWritten = $true
+        $script:FolderRows.Clear()
     }
-    if ($Force -or $script:IdentityRows.Count -ge $script:FlushEvery) {
-        if ($script:IdentityRows.Count -gt 0) {
-            $script:IdentityRows | Export-Csv -LiteralPath $IdentityReportPath -NoTypeInformation -Append:$script:IdentityHeaderWritten
-            $script:IdentityHeaderWritten = $true
-            $script:IdentityRows.Clear()
-        }
+    if ($script:IdentityRows.Count -gt 0) {
+        $script:IdentityRows | Export-Csv -LiteralPath $IdentityReportPath -NoTypeInformation -Append:$script:IdentityHeaderWritten
+        $script:IdentityHeaderWritten = $true
+        $script:IdentityRows.Clear()
     }
-    if ($Force -or $script:InheritRows.Count -ge $script:FlushEvery) {
-        if ($script:InheritRows.Count -gt 0) {
-            $script:InheritRows | Export-Csv -LiteralPath $InheritanceExceptions -NoTypeInformation -Append:$script:InheritHeaderWritten
-            $script:InheritHeaderWritten = $true
-            $script:InheritRows.Clear()
-        }
+    if ($script:InheritRows.Count -gt 0) {
+        $script:InheritRows | Export-Csv -LiteralPath $InheritanceExceptions -NoTypeInformation -Append:$script:InheritHeaderWritten
+        $script:InheritHeaderWritten = $true
+        $script:InheritRows.Clear()
+    }
+    if ($script:PendingCompletedPaths.Count -gt 0) {
+        Add-Content -LiteralPath $CheckpointPath -Value $script:PendingCompletedPaths
+        $script:PendingCompletedPaths.Clear()
     }
 }
 
@@ -1084,7 +1233,10 @@ function Process-Object {
         Get-ItemAuditRows (using the persistent, session-wide caches) and
         immediately appends them to the shared buffers/error log/flush cycle --
         behaviorally identical to how this function worked before
-        -ThrottleLimit existed.
+        -ThrottleLimit existed. On a -Resume run, skips anything already in
+        $script:CompletedItemPaths (loaded from the checkpoint file) entirely --
+        no ACL re-read, no processing -- and otherwise records this item's own
+        completion for the checkpoint once its rows have been queued.
     #>
     param(
         [Parameter(Mandatory)][string]$ItemPath,
@@ -1092,11 +1244,17 @@ function Process-Object {
         [Parameter(Mandatory)][string]$RootPath
     )
 
+    if ($script:CompletedItemPaths.Contains($ItemPath)) {
+        Write-Verbose "Skipping (already completed per checkpoint): $ItemPath"
+        return
+    }
+
     $rows = Get-ItemAuditRows -ItemPath $ItemPath -IsDirectory $IsDirectory -RootPath $RootPath
     foreach ($e in $rows.Errors) { Write-AuditError -ItemPath $e.ItemPath -Message $e.Message }
     if ($rows.InheritRow) { $script:InheritRows.Add($rows.InheritRow) }
     foreach ($r in $rows.FolderRows) { $script:FolderRows.Add($r) }
     foreach ($r in $rows.IdentityRows) { $script:IdentityRows.Add($r) }
+    $script:PendingCompletedPaths.Add($ItemPath)
     Flush-Buffers
 }
 
@@ -1281,7 +1439,15 @@ function Invoke-ParallelTreeWalk {
     }
 
     $processedCount = 0
-    Get-DiscoveredItems | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+    $skippedCount = 0
+    Get-DiscoveredItems | Where-Object {
+        if ($script:CompletedItemPaths.Contains($_.Path)) {
+            $skippedCount++
+            Write-Verbose "Skipping (already completed per checkpoint): $($_.Path)"
+            return $false
+        }
+        return $true
+    } | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
         . ([scriptblock]::Create($using:funcDefsText))
 
         # Redeclared bare/script-scoped variables the injected functions
@@ -1309,20 +1475,30 @@ function Invoke-ParallelTreeWalk {
         # there is no benefit to trying to keep these "warm" across items; all
         # of the real cross-worker caching benefit comes from the shared
         # ConcurrentDictionary caches passed in below.
-        Get-ItemAuditRows -ItemPath $_.Path -IsDirectory $_.IsDirectory -RootPath $using:RootPath `
+        $rows = Get-ItemAuditRows -ItemPath $_.Path -IsDirectory $_.IsDirectory -RootPath $using:RootPath `
             -Cache @{} -GroupCache @{} `
             -SharedLabelCache $using:script:SharedLabelCache -SharedGroupCache $using:script:SharedGroupCache
+        # The checkpoint needs to know which item this result belongs to, but
+        # Get-ItemAuditRows's return value doesn't otherwise carry it -- the
+        # aggregation step below only sees whatever streams back from here, not
+        # the original pipeline object, so attach it before returning.
+        $rows.ItemPath = $_.Path
+        $rows
     } | ForEach-Object {
         $rows = $_
         foreach ($e in $rows.Errors) { Write-AuditError -ItemPath $e.ItemPath -Message $e.Message }
         if ($rows.InheritRow) { $script:InheritRows.Add($rows.InheritRow) }
         foreach ($r in $rows.FolderRows) { $script:FolderRows.Add($r) }
         foreach ($r in $rows.IdentityRows) { $script:IdentityRows.Add($r) }
+        $script:PendingCompletedPaths.Add($rows.ItemPath)
         $processedCount++
         if ($processedCount % 250 -eq 0) {
             Write-Progress -Activity "Scanning $RootPath (parallel, -ThrottleLimit $ThrottleLimit)" -Status "$processedCount objects processed"
         }
         Flush-Buffers
+    }
+    if ($skippedCount -gt 0) {
+        Write-Host "Skipped $skippedCount object(s) already completed in a previous run (per checkpoint)." -ForegroundColor Cyan
     }
 
     Write-Progress -Activity "Scanning $RootPath (parallel, -ThrottleLimit $ThrottleLimit)" -Completed
@@ -1376,7 +1552,12 @@ Write-Verbose "Building AD identity details for $($script:IdentityCache.Count) u
 $script:IdentityCache.Values |
     Sort-Object Type, Name -ErrorAction SilentlyContinue |
     ForEach-Object { Get-AdIdentityDetailRow -IdentityInfo $_ } |
-    Export-Csv -LiteralPath $IdentityDetailsPath -NoTypeInformation
+    Export-Csv -LiteralPath $IdentityDetailsPath -NoTypeInformation -Append:$Resume
+
+# A finished run gets a Completed marker specifically so a LATER -Resume
+# attempt can tell "nothing left to do here" apart from "this one crashed too"
+# -- see the -Resume parameter's own help for the full checkpoint/resume design.
+New-Item -ItemType File -Path $CompletedMarkerPath -Force | Out-Null
 
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  Per-folder view       : $FolderReportPath"

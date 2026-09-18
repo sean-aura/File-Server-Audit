@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.3.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.5.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -132,6 +132,12 @@ Common variants:
 # instead of one at a time -- PowerShell 7+ only; see the caveat below
 # before picking a number
 .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared' -ThrottleLimit 8
+
+# Continue a previous run that got interrupted (killed, crashed, a reboot)
+# before finishing, instead of starting over -- must point -OutputFolder at
+# the SAME folder the interrupted run used, and every other parameter must
+# match exactly (the script checks and refuses if anything's different)
+.\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared' -OutputFolder C:\Audit\Run1 -Resume
 ```
 
 `-BreadthFirst` changes only the *order* objects are visited and written,
@@ -204,6 +210,39 @@ starting point to try is somewhere in the 4-16 range; a heavily-loaded or
 older file server can itself become the bottleneck (or start throttling
 connections) under too much concurrent load, so higher isn't automatically
 better.
+
+`-Resume` continues a run that was interrupted (killed, crashed, the
+machine rebooted) before finishing, instead of starting the whole scan
+over. **Requires an explicit `-OutputFolder`** pointing at the same folder
+the interrupted run used -- `-OutputFolder`'s default value bakes in the
+current timestamp, so relying on it here would almost certainly point at
+a brand-new, empty folder instead. Every run writes a small
+`RunConfig_<timestamp>.json` (every parameter that affects what gets
+scanned or how) and a `Checkpoint_<timestamp>.txt` (every object fully
+processed *and* durably written to the CSVs -- specifically never marked
+done before that, so a crash between "processed" and "written to disk"
+can't silently lose data; worst case, that one object's work is simply
+redone). `-Resume` finds the most recent run in `-OutputFolder` without a
+matching `Completed_<timestamp>.marker`, checks that every parameter from
+this invocation matches what was recorded, and -- only if they all match
+-- continues appending to that same run's files, skipping anything
+already checkpointed. A mismatched parameter (a different `-ThrottleLimit`,
+`-BreadthFirst`, `-Path`, anything) is a clear, specific error rather than
+a guess about which settings should win.
+
+Tested against real interruptions, not just simulated ones: `kill -9`
+mid-scan at multiple points (including deliberately between one checkpoint
+flush and the next, so some objects are processed but not yet durable),
+across both sequential and `-ThrottleLimit` modes -- the resumed run's
+final result is byte-for-byte identical to an uninterrupted run of the
+same tree, with no gaps and no duplicate rows.
+
+**The trade-off you're accepting**: anything already scanned before the
+interruption is *not* re-checked, even if it changed in the meantime -- a
+folder whose permissions were modified after it was scanned would still
+show its older permissions in the final report. For most large-scan
+interruptions this is clearly the right trade (re-scanning everything
+costs far more than this staleness risk), but it's worth knowing about.
 
 `-Verbose` is the standard PowerShell common parameter and prints per-folder
 traversal, every ACL read, cache hits/misses on identity resolution,
@@ -293,6 +332,16 @@ What it gives you:
   the **Summary** button in the header): a single-screen digest instead of
   scattered numbers, meant to answer "what's the state of this share"
   without drilling into individual folders first --
+  - **An incomplete/truncated-data warning, shown automatically when it
+    applies** (a red banner at the top of the Summary view, plus a small
+    persistent badge next to the Summary button visible from anywhere in
+    the report): if the source scan was interrupted before finishing (no
+    matching `Completed_<timestamp>.marker` -- see `-Resume` above) and/or
+    a source CSV's last line was cut off mid-write (the file doesn't end
+    with a newline -- the one incomplete row is dropped, everything else
+    in the file is unaffected), the report says so plainly rather than
+    silently showing a partial picture as if it were the whole one.
+    Everything successfully captured is still shown normally throughout.
   - **Top-line counts**: identities total, users (split enabled/disabled),
     groups, computer/service accounts, folders scanned, folders with broken
     inheritance, disabled/dormant identities, and objects that couldn't be
