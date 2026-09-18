@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.5.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.5.1. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -539,3 +539,35 @@ the one you think it is.
     node your session is actually using, and an honest list of what
     genuinely requires asking someone with server/DFS-management access,
     rather than something you can work around alone).
+
+## Troubleshooting
+
+- **`-ThrottleLimit` parallelization only ever runs under PowerShell 7+ --
+  confirmed, not just assumed.** The check (`-ThrottleLimit` above 1 AND
+  not running under Core edition) happens right at the start of the
+  script, before any scanning begins, and is a hard failure: passing
+  `-ThrottleLimit` above its default of 1 under Windows PowerShell 5.1
+  throws immediately with a clear message, rather than silently falling
+  back to sequential or attempting to parallelize anyway. There is no code
+  path in which parallel processing runs anywhere except PS7+. Leave
+  `-ThrottleLimit` at its default (1) and the script runs exactly the same
+  way it always has under 5.1.
+
+- **A scan can hang indefinitely if a network path becomes unresponsive
+  (not erroring, just hanging)** -- e.g. a share that's still mounted/
+  visible but a specific server or path stops responding to requests
+  entirely. Neither mode has a timeout on individual ACL reads: in
+  sequential mode, one hung read halts the whole scan; under
+  `-ThrottleLimit`, `ForEach-Object -Parallel` won't return until *every*
+  dispatched item completes, so one permanently-hung worker will stall the
+  whole run even if every other item finished cleanly and was already
+  written to disk. This isn't new in this release, and isn't specific to
+  `-ThrottleLimit` -- it's an inherent property of not having a per-object
+  timeout in either mode. If a scan seems to have stopped progressing (no
+  new `Write-Progress` updates, nothing new appended to `Errors.log` or
+  the CSVs for an unexpectedly long time), that's the most likely cause.
+  The practical mitigation: `-Resume` (see above) means killing a hung
+  scan and continuing it is now a matter of minutes of lost work, not a
+  full re-scan from scratch -- everything already completed and flushed
+  before the hang is preserved.
+

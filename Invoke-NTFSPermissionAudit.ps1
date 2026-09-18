@@ -253,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.5.0
+    Version: 0.5.1
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -319,7 +319,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.5.0'
+$ScriptVersion = '0.5.1'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -1520,29 +1520,49 @@ foreach ($root in $Path) {
 
 Flush-Buffers -Force
 
-if ($ThrottleLimit -gt 1) {
-    # BUG FIX: under parallel processing, every worker resolves identities into
-    # its own fresh, throwaway per-item cache -- never into $script:IdentityCache
-    # itself -- and the SHARED cache deliberately holds only plain Name/Type
-    # labels, never a live .Principal object (see Resolve-IdentityInfo's own
-    # comment for why). Left as-is, $script:IdentityCache would still be empty
-    # here, and ADIdentityDetails.csv -- which reads directly from it, below --
-    # would silently come out with zero rows under -ThrottleLimit, despite
-    # FolderPermissions.csv/IdentityPermissions.csv being fully populated. Fix:
-    # every identity encountered during the scan (direct ACEs AND expanded group
-    # members) ends up as a key in $script:SharedLabelCache regardless of scan
-    # mode, so re-resolve each one properly, once, sequentially, on the main
-    # thread (which is exactly what would have happened inline during a
-    # sequential scan) before generating the identity-details report.
-    Write-Verbose "Re-resolving $($script:SharedLabelCache.Count) identity(ies) encountered during parallel processing, to populate full AD detail (department/manager/account-state) for ADIdentityDetails.csv -- the shared cache used during the scan itself intentionally excludes this to stay thread-safe."
-    foreach ($sidStr in $script:SharedLabelCache.Keys) {
+if ($ThrottleLimit -gt 1 -or $Resume) {
+    # Two distinct reasons $script:IdentityCache can be missing identities
+    # that legitimately belong in ADIdentityDetails.csv, both fixed the same
+    # way (re-resolve properly on the main thread, once, at the end):
+    #
+    # 1. Under parallel processing, every worker resolves identities into its
+    #    own fresh, throwaway per-item cache -- never into $script:IdentityCache
+    #    itself -- and the SHARED cache deliberately holds only plain Name/Type
+    #    labels, never a live .Principal object (see Resolve-IdentityInfo's own
+    #    comment for why).
+    # 2. Under -Resume, this is a brand-new process: $script:IdentityCache only
+    #    ever contains identities THIS invocation actually processed. Anything
+    #    that only ever appeared in the already-checkpointed (skipped) portion
+    #    of the scan -- fully valid rows already sitting in
+    #    IdentityPermissions.csv from before this invocation even started --
+    #    never touches this process's IdentityCache OR SharedLabelCache at all,
+    #    since those items are never re-processed by design. Confirmed as a
+    #    real gap (not just theoretical) with a dedicated reproduction before
+    #    being fixed here.
+    #
+    # Left unfixed, ADIdentityDetails.csv would silently omit real identities
+    # that DO have rows in IdentityPermissions.csv -- not a crash, just a
+    # quiet gap that undermines exactly the completeness -Resume is supposed
+    # to guarantee.
+    $sidsToBackfill = New-Object System.Collections.Generic.HashSet[string]
+    if ($ThrottleLimit -gt 1) {
+        foreach ($sidStr in $script:SharedLabelCache.Keys) { [void]$sidsToBackfill.Add($sidStr) }
+    }
+    if ($Resume -and (Test-Path -LiteralPath $IdentityReportPath)) {
+        Write-Verbose "Reading back $IdentityReportPath to find identities from the already-completed (checkpointed) portion of a resumed scan, which this process never touched directly."
+        Import-Csv -LiteralPath $IdentityReportPath | ForEach-Object {
+            if ($_.IdentitySid) { [void]$sidsToBackfill.Add($_.IdentitySid) }
+        }
+    }
+    Write-Verbose "Re-resolving $($sidsToBackfill.Count) identity(ies) to ensure ADIdentityDetails.csv covers everyone actually referenced in IdentityPermissions.csv."
+    foreach ($sidStr in $sidsToBackfill) {
         if (-not $script:IdentityCache.ContainsKey($sidStr)) {
             try {
                 $sidObj = New-Object System.Security.Principal.SecurityIdentifier($sidStr)
                 Resolve-IdentityInfo -IdentityReference $sidObj | Out-Null
             }
             catch {
-                Write-AuditError -ItemPath "Identity:$sidStr" -Message "Failed to re-resolve for ADIdentityDetails.csv after parallel scan: $($_.Exception.Message)"
+                Write-AuditError -ItemPath "Identity:$sidStr" -Message "Failed to re-resolve for ADIdentityDetails.csv: $($_.Exception.Message)"
             }
         }
     }

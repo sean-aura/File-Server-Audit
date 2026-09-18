@@ -2,6 +2,58 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.1] - Identity-backfill fix for -Resume, plus troubleshooting docs
+
+### Fixed -- found during a deliberate, requested review of the 0.5.0 changes
+- **`ADIdentityDetails.csv` could silently omit identities from a resumed
+  scan's already-completed portion.** The parallel-mode identity backfill
+  added in 0.3.0 only covered that one case; on `-Resume` (with or without
+  `-ThrottleLimit`), a fresh process's identity cache only ever contains
+  identities *this* invocation actually processed. Anything that only ever
+  appeared in the already-checkpointed (skipped) portion of the scan --
+  fully valid rows already sitting in `IdentityPermissions.csv` from
+  before this invocation started -- never touched this process's cache at
+  all, since those items are never re-processed by design. Reproduced with
+  a targeted mock test before fixing (confirmed real identities would go
+  missing), then fixed by extending the backfill to also read back the
+  existing `IdentityPermissions.csv` on `-Resume` and re-resolve any
+  identity not already known. Verified the actual code path (not just the
+  isolated logic) via a hand-crafted resumable-run scenario.
+
+### Documentation
+- New **Troubleshooting** section in `README.md`:
+  - Confirms, based on re-reading the actual gating code rather than
+    re-asserting it, that `-ThrottleLimit` parallelization has no code
+    path that runs, attempts to run, or silently falls back under Windows
+    PowerShell 5.1 -- it's a hard, immediate failure before any scanning
+    begins.
+  - Documents a real, pre-existing (not introduced by `-ThrottleLimit`)
+    risk: neither scan mode has a timeout on individual ACL reads, so an
+    unresponsive (not erroring, just hanging) network path can stall a
+    scan indefinitely -- worse under `-ThrottleLimit` in one specific way,
+    since `ForEach-Object -Parallel` won't return until every dispatched
+    item completes, so one permanently-hung worker blocks the whole run
+    even if everything else finished cleanly. Notes `-Resume` as the
+    practical mitigation if this happens.
+
+### Testing notes
+- Re-verified, with direct tests rather than assumption, two things that
+  are easy to get subtly wrong: (1) grepped all three scripts for
+  PS7-only syntax (ternary, null-coalescing, pipeline chain operators) --
+  none found, confirming the sequential path genuinely stays PS 5.1
+  compatible; (2) the RunConfig JSON round-trip correctly preserves
+  single-element arrays, negative integers, and booleans across
+  `ConvertTo-Json`/`ConvertFrom-Json` (a classic PowerShell gotcha is
+  single-element arrays collapsing to bare scalars -- confirmed this does
+  not happen here, and that the comparison logic would tolerate it even
+  if it did).
+- All three features combined (`-BreadthFirst` + `-ThrottleLimit` +
+  `-Resume`) tested together with a real `kill -9`, completing correctly.
+- Full existing suite (13 HTML/JS files, 4 PowerShell/shell files, plus
+  the new identity-gap reproduction test) re-run clean.
+
+---
+
 ## [0.5.0] - Crash recovery (-Resume) and incomplete/truncated-data handling
 
 ### Added
