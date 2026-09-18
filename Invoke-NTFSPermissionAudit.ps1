@@ -998,23 +998,35 @@ function Get-ObjectAcl {
 
     $safePath = Get-LongPathSafe -InputPath $ItemPath
     Write-Verbose "Reading ACL: $ItemPath"
+    # Explicitly request Access | Owner | Group -- this is Microsoft's own
+    # documented equivalent of the parameterless GetAccessControl() overload
+    # (confirmed via docs, not assumed), used here so the exact sections
+    # requested are visible in one place rather than relying on each
+    # runtime's own implicit default for the no-args overload. An earlier
+    # version of this fix incorrectly omitted Group, which was a mistake --
+    # restored to match the documented default exactly, since there's no
+    # good reason to deviate from a combination Microsoft states is
+    # equivalent to the standard behavior.
+    $sections = [System.Security.AccessControl.AccessControlSections]::Access -bor `
+                [System.Security.AccessControl.AccessControlSections]::Owner -bor `
+                [System.Security.AccessControl.AccessControlSections]::Group
     try {
         if ($script:IsPSCore) {
             if ($IsDirectory) {
                 $di = New-Object System.IO.DirectoryInfo($safePath)
-                return [System.IO.FileSystemAclExtensions]::GetAccessControl($di)
+                return [System.IO.FileSystemAclExtensions]::GetAccessControl($di, $sections)
             }
             else {
                 $fi = New-Object System.IO.FileInfo($safePath)
-                return [System.IO.FileSystemAclExtensions]::GetAccessControl($fi)
+                return [System.IO.FileSystemAclExtensions]::GetAccessControl($fi, $sections)
             }
         }
         else {
             if ($IsDirectory) {
-                return [System.IO.Directory]::GetAccessControl($safePath)
+                return [System.IO.Directory]::GetAccessControl($safePath, $sections)
             }
             else {
-                return [System.IO.File]::GetAccessControl($safePath)
+                return [System.IO.File]::GetAccessControl($safePath, $sections)
             }
         }
     }

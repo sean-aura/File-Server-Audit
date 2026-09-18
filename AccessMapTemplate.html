@@ -64,9 +64,19 @@
   .detailTabs { display:flex; gap:4px; margin-bottom:8px; }
   .detailTabBtn { padding:6px 14px; font-size:12px; }
   .detailTabBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
+  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; position:relative; }
   .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; }
   .graphToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
+  .graphLegendToggle { position:absolute; right:14px; bottom:14px; width:26px; height:26px; border-radius:50%; background:var(--panel2); border:1px solid var(--border); color:var(--muted); font-size:14px; font-weight:600; font-style:italic; font-family:Georgia,serif; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:5; }
+  .graphLegendToggle:hover { color:var(--text); border-color:var(--muted); }
+  .graphLegendPanel { position:absolute; right:14px; bottom:48px; width:230px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:12px 14px; font-size:11px; z-index:5; box-shadow:0 4px 16px rgba(0,0,0,0.4); }
+  .graphLegendPanel h4 { margin:0 0 6px; font-size:11px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.03em; }
+  .graphLegendPanel h4:not(:first-child) { margin-top:10px; }
+  .graphLegendRow { display:flex; align-items:center; gap:7px; padding:2px 0; }
+  .graphLegendSwatch { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
+  .graphLegendLine { width:16px; height:0; border-top:3px solid; flex-shrink:0; }
+  .graphLegendLine.dashed { border-top-style:dashed; }
+  .graphLegendDot { width:9px; height:9px; border-radius:50%; background:#ffb454; border:1px solid #000; flex-shrink:0; }
   .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
   .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
   svg.graph { width:100%; height:520px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
@@ -760,6 +770,75 @@ function renderRelationshipGraph(kind, idx, onNavigate, onDepthChange) {
   toolbar.appendChild(hint);
   wrap.appendChild(toolbar);
 
+  const legendToggle = document.createElement('button');
+  legendToggle.className = 'graphLegendToggle';
+  legendToggle.textContent = 'i';
+  legendToggle.title = 'Show legend';
+  wrap.appendChild(legendToggle);
+
+  const legendPanel = document.createElement('div');
+  legendPanel.className = 'graphLegendPanel';
+  legendPanel.style.display = 'none';
+  function legendSection(title, rows) {
+    const h = document.createElement('h4');
+    h.textContent = title;
+    legendPanel.appendChild(h);
+    rows.forEach(row => legendPanel.appendChild(row));
+  }
+  function swatchRow(color, label) {
+    const row = document.createElement('div');
+    row.className = 'graphLegendRow';
+    const sw = document.createElement('span');
+    sw.className = 'graphLegendSwatch';
+    sw.style.background = color;
+    row.appendChild(sw);
+    const lbl = document.createElement('span');
+    lbl.textContent = label;
+    row.appendChild(lbl);
+    return row;
+  }
+  function lineRow(color, label, dashed) {
+    const row = document.createElement('div');
+    row.className = 'graphLegendRow';
+    const ln = document.createElement('span');
+    ln.className = 'graphLegendLine' + (dashed ? ' dashed' : '');
+    ln.style.borderTopColor = color;
+    row.appendChild(ln);
+    const lbl = document.createElement('span');
+    lbl.textContent = label;
+    row.appendChild(lbl);
+    return row;
+  }
+  legendSection('Nodes', [
+    swatchRow('#ffb454', 'Center (current selection)'),
+    swatchRow('#57d3d3', 'Folder'),
+    swatchRow(TYPE_COLORS.User, 'User'),
+    swatchRow(TYPE_COLORS.Group, 'Group'),
+    swatchRow(TYPE_COLORS.Computer, 'Computer'),
+    swatchRow(TYPE_COLORS['Well-known / Local'], 'Well-known / Local / Unresolved')
+  ]);
+  const flagRow = document.createElement('div');
+  flagRow.className = 'graphLegendRow';
+  const dot = document.createElement('span');
+  dot.className = 'graphLegendDot';
+  flagRow.appendChild(dot);
+  const flagLbl = document.createElement('span');
+  flagLbl.textContent = 'Broken inheritance (folder) / disabled, locked, or dormant (identity)';
+  flagRow.appendChild(flagLbl);
+  legendPanel.appendChild(flagRow);
+  legendSection('Access rights', RIGHTS_LABELS.map((label, i) => swatchRow(EDGE_COLORS[i], label)));
+  legendSection('Lines', [
+    lineRow('#7d8a99', 'Solid = explicit access', false),
+    lineRow('#7d8a99', 'Dashed = inherited access', true),
+    lineRow('#c084fc', 'Dashed = group membership', true)
+  ]);
+  wrap.appendChild(legendPanel);
+  legendToggle.onclick = () => {
+    const showing = legendPanel.style.display !== 'none';
+    legendPanel.style.display = showing ? 'none' : 'block';
+    legendToggle.title = showing ? 'Show legend' : 'Hide legend';
+  };
+
   let maxAbs = 60;
   positions.forEach(p => { maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y)); });
   const half = maxAbs + 140;
@@ -820,14 +899,7 @@ function renderRelationshipGraph(kind, idx, onNavigate, onDepthChange) {
     return group;
   }
 
-  const centerGroup = buildNode(centerKey, positions.get(centerKey), true);
-  centerGroup.addEventListener('mousedown', (e) => e.stopPropagation());
-
-  allKeys.forEach(key => {
-    if (key === centerKey) return;
-    const pos = positions.get(key);
-    const group = buildNode(key, pos, false);
-
+  function attachDragHandlers(group, key, pos, isCenter) {
     let dragging = false, moved = false, startClientX = 0, startClientY = 0, startX = pos.x, startY = pos.y;
     function clientToSvgScale() {
       const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
@@ -854,7 +926,11 @@ function renderRelationshipGraph(kind, idx, onNavigate, onDepthChange) {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       dragging = false;
-      if (!moved) onNavigate(key);
+      // The center is already the current selection -- dragging it around is
+      // still useful (decluttering a busy graph), but clicking it to
+      // "navigate to itself" would be a no-op at best, so only non-center
+      // nodes trigger navigation on a genuine (non-drag) click.
+      if (!moved && !isCenter) onNavigate(key);
     }
     group.addEventListener('mousedown', (e) => {
       e.stopPropagation();
@@ -864,6 +940,16 @@ function renderRelationshipGraph(kind, idx, onNavigate, onDepthChange) {
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     });
+  }
+
+  const centerGroup = buildNode(centerKey, positions.get(centerKey), true);
+  attachDragHandlers(centerGroup, centerKey, positions.get(centerKey), true);
+
+  allKeys.forEach(key => {
+    if (key === centerKey) return;
+    const pos = positions.get(key);
+    const group = buildNode(key, pos, false);
+    attachDragHandlers(group, key, pos, false);
   });
 
   let panning = false, panStartClientX = 0, panStartClientY = 0, panStartVb = null;

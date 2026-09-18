@@ -456,6 +456,33 @@ embedded as JSON in the one HTML file, which can get large (tens of MB) --
 still workable, but if it feels sluggish, generate a map per share/subtree
 rather than one for the whole server, or keep the depth setting low.
 
+**`Build-AccessMapHtml.ps1` reads `IdentityPermissions.csv`/`ADIdentityDetails.csv`
+as a true stream** (one row at a time via a quote-aware CSV parser), not by
+loading the whole file into memory as `Import-Csv` does -- a real, structural
+difference on a very large file, since `Import-Csv` must hold every row
+simultaneously by design. This measurably raises how large a source file the
+*build* step can get through without running out of memory. It comes with an
+honest trade-off, not a free win: streaming is meaningfully **slower** in
+wall-clock time than `Import-Csv` on a file that would have fit in memory
+anyway (confirmed directly: roughly 3 minutes for 800,000 rows in testing) --
+worth knowing if you're scanning something modest in size, where the old
+behavior would have been faster.
+
+**This does not remove the tool's fundamental size ceiling.** Streaming the
+*input* more efficiently doesn't change that the *output* is still one
+self-contained HTML file with the entire dataset embedded as JSON in it --
+the accumulated edges/identities/folders, and the final JSON string, still
+need to fit in memory as one piece, and a browser still needs to load and
+parse that whole file. A warning appears automatically once
+`IdentityPermissions.csv` exceeds roughly 300 MB, since that's the point
+where running into trouble becomes a real possibility. **The actual fix for
+a source file at that scale isn't a bigger machine -- it's scanning and
+mapping one share/subtree at a time** (re-run `Invoke-NTFSPermissionAudit.ps1`
+with `-Path` pointed at each major share separately, and build a map per
+share) rather than one combined report for an entire file server. This is
+already fully supported today, nothing new to learn -- it's simply the
+scalable way to use a single-file-HTML tool like this one.
+
 Like the CSVs, `Errors.log` is picked up automatically from `-InputFolder`
 if present (matching the same run by timestamp) -- nothing extra to pass.
 If it's missing entirely, the Summary view's "could not be scanned" count

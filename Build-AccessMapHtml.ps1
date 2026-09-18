@@ -245,10 +245,30 @@ Write-Host "Build-AccessMapHtml v$ScriptVersion" -ForegroundColor Cyan
 # killed process essentially never does, regardless of which field or how
 # much of it got cut.
 $script:truncatedRowsDropped = 0
+Add-Type -AssemblyName Microsoft.VisualBasic
+
 function Import-CsvRobust {
+    <#
+        Streams rows one at a time via TextFieldParser instead of loading the
+        whole file into memory as an array of PSCustomObjects the way
+        Import-Csv does -- a real, structural difference on a very large
+        file, not just a theoretical one, since Import-Csv must hold every
+        row simultaneously by design (confirmed directly: its own array
+        alone is the first thing to exhaust memory on a large file, before
+        this script's own edges/identities/folders accumulation even gets a
+        turn). TextFieldParser is a robust, quote-aware CSV parser built into
+        .NET (correctly handles embedded commas/quotes in a field, verified
+        directly, not just assumed) -- not a hand-rolled comma-split.
+
+        Still detects and drops a truncated last row (from a process killed
+        mid-write) using the same "does the raw file end with a newline"
+        check as before, computed once up front via a separate, cheap
+        byte-level check (unaffected by file size). A one-row lookahead
+        buffer inside the streaming loop withholds the very last row until
+        we know whether to actually emit it, without ever needing to hold
+        more than one row in memory at a time to make that call.
+    #>
     param([Parameter(Mandatory)][string]$Path)
-    $rows = @(Import-Csv -LiteralPath $Path)
-    if ($rows.Count -eq 0) { return $rows }
 
     $endsWithNewline = $false
     $fs = [System.IO.File]::OpenRead($Path)
@@ -260,17 +280,76 @@ function Import-CsvRobust {
     }
     finally { $fs.Dispose() }
 
-    if (-not $endsWithNewline) {
-        Write-Warning "'$Path' doesn't end with a newline -- looks like the file was truncated mid-write (a killed/crashed run). Dropping that one incomplete last row; everything else in the file is unaffected."
-        $script:truncatedRowsDropped++
-        return $rows[0..($rows.Count - 2)]
+    $parser = New-Object Microsoft.VisualBasic.FileIO.TextFieldParser($Path)
+    $parser.TextFieldType = [Microsoft.VisualBasic.FileIO.FieldType]::Delimited
+    $parser.SetDelimiters(',')
+    $parser.HasFieldsEnclosedInQuotes = $true
+    try {
+        if ($parser.EndOfData) { return }
+        $headers = $parser.ReadFields()
+
+        $pending = $null
+        $hitMalformedLine = $false
+        while (-not $parser.EndOfData) {
+            try {
+                $fields = $parser.ReadFields()
+            }
+            catch [Microsoft.VisualBasic.FileIO.MalformedLineException] {
+                # TextFieldParser is stricter than Import-Csv here (confirmed
+                # directly, not assumed): a truncated/malformed line -- e.g. an
+                # unterminated quote from a process killed mid-write -- makes
+                # Import-Csv silently return a partial/null-padded row, but
+                # makes TextFieldParser throw outright. Treated the same way
+                # either way: this is the truncated row, drop it, stop
+                # reading (the file's structure past this point can't be
+                # trusted), but still emit whatever was successfully read and
+                # held back as $pending before this happened.
+                $hitMalformedLine = $true
+                break
+            }
+            $obj = [ordered]@{}
+            for ($h = 0; $h -lt $headers.Count; $h++) {
+                $obj[$headers[$h]] = if ($h -lt $fields.Count) { $fields[$h] } else { $null }
+            }
+            if ($null -ne $pending) { Write-Output $pending }
+            $pending = [PSCustomObject]$obj
+        }
+        if ($null -ne $pending) {
+            if ($hitMalformedLine) {
+                # $pending is a genuinely complete row (it parsed fine); the
+                # malformed content came AFTER it and was never captured as a
+                # row at all, so $pending itself is safe to keep.
+                Write-Output $pending
+                Write-Warning "'$Path' has a malformed line near the end (consistent with a process killed mid-write) -- the incomplete trailing content was dropped; everything successfully parsed, including the row just before it, is kept."
+                $script:truncatedRowsDropped++
+            }
+            elseif ($endsWithNewline) {
+                Write-Output $pending
+            }
+            else {
+                Write-Warning "'$Path' doesn't end with a newline -- looks like the file was truncated mid-write (a killed/crashed run). Dropping that one incomplete last row; everything else in the file is unaffected."
+                $script:truncatedRowsDropped++
+            }
+        }
     }
-    return $rows
+    finally { $parser.Dispose() }
+}
+
+# A very large source file is the scenario this streaming approach exists
+# for -- warn early and clearly rather than let someone wait through a long,
+# memory-heavy run only to have it fail uninformatively partway through. This
+# is a soft warning, not a hard block: the streaming reader itself has no
+# fixed ceiling, but the accumulated edges/identities/folders structures (and
+# the final embedded JSON) still need to fit in memory as one piece, since
+# the output format is a single self-contained HTML file. Splitting the scan
+# by share/subtree and generating one map per share is the actual scalable
+# way to use this tool at that size, not a workaround.
+$identityPermsSizeMB = (Get-Item -LiteralPath $identityPermsPath).Length / 1MB
+if ($identityPermsSizeMB -gt 300) {
+    Write-Warning "$identityPermsPath is $([math]::Round($identityPermsSizeMB)) MB. This tool builds one self-contained HTML file with the entire dataset embedded in it, so very large inputs risk running out of memory or producing an HTML file too large for a browser to comfortably open, regardless of how efficiently the CSV itself is read. If this runs into trouble, the fix isn't a bigger machine -- it's scanning and mapping one share/subtree at a time (re-run Invoke-NTFSPermissionAudit.ps1 with -Path pointed at each major share separately, and build a map per share) rather than one combined report for an entire file server."
 }
 
 Write-Host "Reading $identityPermsPath ..." -ForegroundColor Cyan
-$permRows = Import-CsvRobust -Path $identityPermsPath
-Write-Verbose "Loaded $($permRows.Count) permission row(s)."
 
 $adDetails = @{}
 if ($adDetailsPath -and (Test-Path -LiteralPath $adDetailsPath)) {
@@ -293,6 +372,16 @@ $scanErrors = New-Object System.Collections.Generic.List[object]
 if ($errorsLogPath -and (Test-Path -LiteralPath $errorsLogPath)) {
     Write-Host "Reading $errorsLogPath ..." -ForegroundColor Cyan
     $errorLinePattern = '^\[(?<ts>[^\]]+)\]\s(?<path>.+?)\s::\s(?<msg>.+)$'
+    # A -Resume run's Errors.log can legitimately contain TWO entries for the
+    # same path: one from before the crash (an item that was processed but
+    # not yet checkpointed when the process died) and one from after resuming
+    # (that same item, correctly redone). Both are real log entries and both
+    # stay in the raw log file, but for THIS report -- which is meant to
+    # answer "how many distinct objects couldn't be scanned" -- counting that
+    # one folder twice would overstate the problem. Deduplicated by path,
+    # keeping the most recent attempt (in the same order the log itself was
+    # written), immediately after parsing.
+    $rawErrors = New-Object System.Collections.Generic.List[object]
     foreach ($line in (Get-Content -LiteralPath $errorsLogPath)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $m = [regex]::Match($line, $errorLinePattern)
@@ -303,7 +392,7 @@ if ($errorsLogPath -and (Test-Path -LiteralPath $errorsLogPath)) {
                 'PathTooLong|too long|not supported.*platform' { 'Path/platform limitation'; break }
                 default                               { 'Other' }
             }
-            $scanErrors.Add([PSCustomObject]@{
+            $rawErrors.Add([PSCustomObject]@{
                 Timestamp = $m.Groups['ts'].Value
                 Path      = $m.Groups['path'].Value
                 Message   = $msg
@@ -313,10 +402,29 @@ if ($errorsLogPath -and (Test-Path -LiteralPath $errorsLogPath)) {
         else {
             # Line didn't match the usual "[ts] path :: message" shape (e.g. a
             # wrapped/multi-line message) -- keep it rather than silently drop it.
-            $scanErrors.Add([PSCustomObject]@{ Timestamp = $null; Path = $null; Message = $line; Category = 'Other' })
+            # No meaningful Path to dedupe by, so always kept as its own entry.
+            $rawErrors.Add([PSCustomObject]@{ Timestamp = $null; Path = $null; Message = $line; Category = 'Other' })
         }
     }
-    Write-Verbose "Loaded $($scanErrors.Count) scan error(s)."
+    $seenPaths = @{}
+    $dedupedCount = 0
+    foreach ($err in $rawErrors) {
+        if ($null -eq $err.Path) { $scanErrors.Add($err); continue }
+        if ($seenPaths.ContainsKey($err.Path)) {
+            # A later entry for a path already seen: replace the earlier one
+            # (it's the more recent attempt) rather than adding a duplicate.
+            $scanErrors[$seenPaths[$err.Path]] = $err
+            $dedupedCount++
+        }
+        else {
+            $scanErrors.Add($err)
+            $seenPaths[$err.Path] = $scanErrors.Count - 1
+        }
+    }
+    if ($dedupedCount -gt 0) {
+        Write-Host "$dedupedCount duplicate error entry/entries (same path logged more than once -- consistent with a -Resume run redoing an interrupted item) were collapsed to the most recent attempt." -ForegroundColor Cyan
+    }
+    Write-Verbose "Loaded $($scanErrors.Count) distinct scan error(s) (from $($rawErrors.Count) raw log line(s))."
 }
 else {
     Write-Verbose "No Errors*.log found in '$InputFolder' -- assuming a clean scan with nothing to report."
@@ -406,11 +514,24 @@ function Get-OrAdd-Folder {
 
 $edges = New-Object System.Collections.Generic.List[object]
 $brokenInheritanceFolders = New-Object System.Collections.Generic.HashSet[int]
+$fileRowsExcluded = 0
 
 $i = 0
-foreach ($row in $permRows) {
+foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
     $i++
-    if ($i % 5000 -eq 0) { Write-Progress -Activity 'Building access map' -Status "$i / $($permRows.Count) rows" -PercentComplete (($i / [math]::Max(1,$permRows.Count)) * 100) }
+    if ($i % 5000 -eq 0) { Write-Progress -Activity 'Building access map' -Status "$i rows processed" }
+
+    # The interactive map is folder-centric by design (folders are the thing
+    # you navigate; identities are the other node type) -- a FILE row's own
+    # Path is the file's full path, not a folder, so feeding it through
+    # Get-OrAdd-Folder the same way would create a phantom "folder" node for
+    # every individual file, silently inflating the folder count (confirmed
+    # directly: a folder with 2 files under -IncludeFiles reported 3
+    # "folders", not 1). File-level ACE rows remain fully present in the raw
+    # IdentityPermissions.csv -- exactly what -IncludeFiles is for, catching
+    # file-level exceptions to a folder's own permissions -- just not
+    # represented as their own nodes in this interactive map.
+    if ($row.ObjectType -eq 'File') { $fileRowsExcluded++; continue }
 
     $identityIdx = Get-OrAdd-Identity -Sid $row.IdentitySid -Name $row.IdentityName -Type $row.IdentityType
     $folderIdx   = Get-OrAdd-Folder -Path $row.Path
@@ -436,7 +557,10 @@ foreach ($row in $permRows) {
 }
 Write-Progress -Activity 'Building access map' -Completed
 
-Write-Host "Identities: $($identityIndex.Count)   Folders: $($folderIndex.Count)   Edges: $($edges.Count)   Broken-inheritance folders: $($brokenInheritanceFolders.Count)" -ForegroundColor Green
+Write-Host "Read $i permission row(s).   Identities: $($identityIndex.Count)   Folders: $($folderIndex.Count)   Edges: $($edges.Count)   Broken-inheritance folders: $($brokenInheritanceFolders.Count)" -ForegroundColor Green
+if ($fileRowsExcluded -gt 0) {
+    Write-Host "$fileRowsExcluded file-level access row(s) from -IncludeFiles were excluded from this interactive map (folders/identities only) -- they're still in $identityPermsPath itself." -ForegroundColor Cyan
+}
 if ($edges.Count -gt 150000) {
     Write-Warning "This is a large map ($($edges.Count) edges). The HTML file may be large and the browser may feel sluggish. Consider generating a map per share/subtree instead of the whole server if that happens."
 }
