@@ -2,7 +2,68 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.6.0] - Access map: lazy per-share loading, skeleton/data split
+## [0.6.0] - Access map: lazy per-share loading, offline bash/awk variant
+
+### Added -- offline bash/awk variant of Build-AccessMapHtml
+- **`Build-AccessMapHtml.sh` + `build.awk`**: a Linux/macOS bash+awk port of
+  `Build-AccessMapHtml.ps1`, producing the exact same `AccessMap.html` +
+  `AccessMap_data\` output from the same CSVs without needing PowerShell at
+  all. Needs only `bash` and a standard `awk` (tested against gawk, mawk,
+  and reasoned to be POSIX-portable to macOS's built-in awk). Mirrors the
+  PowerShell script's CLI shape (`-i/--input-folder`, `-o/--output-folder`,
+  `-m/--max-edges-per-node`, `-f/--force`), its multi-run "most recent by
+  timestamp" file discovery, its truncated-last-CSV-line detection, and its
+  non-empty-output-folder guard. Written without `set -e`/`set -u`/
+  `set -o pipefail`, per a specific request -- every command whose failure
+  matters is checked explicitly instead.
+  - CSV parsing uses a hybrid strategy: a plain `split(",")` fast path for
+    the overwhelming majority of rows, falling back to a quote-aware
+    character-by-character parser only for rows that actually contain a
+    `"` (handling embedded commas and doubled `""` quoting correctly). A
+    stray trailing `\r` is stripped from every physical line before use, so
+    a `\r\n`-terminated (Windows-authored) CSV parses the same as a
+    Unix-authored one regardless of which column ends up last. A quoted
+    field containing a literal embedded newline is detected (an odd count
+    of `"` characters in the record built so far means a quoted field is
+    still open) and correctly reassembled across however many physical
+    lines it spans, rather than silently mis-parsed -- the build's own
+    summary output reports when this happens. A file that ends with an
+    unterminated quote (a genuinely malformed CSV, or the same mid-write
+    kill the existing truncated-last-line check already catches, just
+    landing inside a quoted field instead) is detected too and its
+    incomplete last row dropped, with the two detection paths deduplicated
+    so a single truncated row is never reported as two.
+  - Verified against a real generated multi-share dataset (3 shares,
+    broken inheritance, group membership, a broad-principal grant,
+    dormant/disabled/locked identities, an unresolved SID, scan errors, a
+    truncated-last-line scenario, shares with exactly one access entry, a
+    genuine embedded-newline-in-a-quoted-field row, `\r\n` line endings,
+    and a truncation landing inside a quoted field) with a structural diff
+    against `Build-AccessMapHtml.ps1`'s output for the same input -- same
+    identities, same folders (incl. `broken` flags), same per-share edge
+    multisets, same dashboard aggregates (`rightsDistribution`,
+    `broadPrincipalGrants`, `totalEdgeCount`, `scanErrors`) -- not just "it
+    ran without crashing." Also cross-checked byte-identical output between
+    gawk and mawk. NOT verified against macOS's own built-in awk (a
+    BWK/"one true awk" derivative) -- the script avoids gawk-only features
+    so it's expected to behave the same there, but that's an expectation,
+    not something actually tested on this project so far. The only
+    difference found and fixed along the way was a genuine bug (see Fixed,
+    below), not a compromise accepted afterward.
+    `identities[]`/`folders[]` array ORDER is not guaranteed to match the
+    PowerShell version's for the same input; the data itself is
+    equivalent either way.
+
+### Fixed -- found by actually running this against generated test data
+- Plain (non-boolean) AD-detail fields (`title`, `dept`, `lastLogon`, etc.)
+  were emitted as JSON `null` whenever that one field happened to be blank,
+  where the PowerShell version only nulls them when there's no AD detail
+  record for the identity AT ALL, otherwise emitting `""` for a blank field
+  on an otherwise-known identity. Functionally inert either way (`""` and
+  `null` are both falsy in the JS that reads them), but the structural diff
+  against the PowerShell output flagged it, so it was fixed for semantic
+  parity: `sid`/`name`/`type` are now always emitted as-is (even empty),
+  and the AD-lookup fields null only when no detail record exists at all.
 
 ### Changed -- `Build-AccessMapHtml.ps1` / `AccessMapTemplate.html`
 - **Report output is now a folder, not one file.** `-OutputHtmlPath` is

@@ -332,6 +332,50 @@ NTFSSecurity module, commercial products like Varonis/Netwrix, are either
 CLI/text-only or need their own agent and server. This turns the CSVs you
 already have into the closest practical equivalent.)
 
+**Offline Linux/macOS variant.** `Build-AccessMapHtml.sh` (+ its companion
+`build.awk`, both need to sit alongside `AccessMapTemplate.html` just like
+the PowerShell script does) produces the exact same `AccessMap.html` +
+`AccessMap_data\` output from the same CSVs, entirely without PowerShell --
+useful for building the report on a Linux/macOS box, in CI, or anywhere
+PowerShell isn't installed:
+
+```bash
+./Build-AccessMapHtml.sh -i /audit/Run1
+# or: -o OUTPUT_FOLDER, -m MAX_EDGES_PER_NODE, -f/--force -- run --help for all of them
+```
+
+It needs only `bash` and a standard `awk`. It reads the CSVs itself rather
+than shelling out to the `.ps1` files, so `Invoke-NTFSPermissionAudit.ps1`
+still has to have actually run (on Windows, where it needs
+`System.DirectoryServices`) to produce them first; only this last,
+platform-independent step moves to bash. Verified to produce semantically
+identical output to `Build-AccessMapHtml.ps1` for the same input (same
+identities, folders, edges, and every dashboard aggregate -- confirmed with
+a structural diff, not just "it didn't crash") against both **gawk** and
+**mawk**, byte-identical between the two. It has *not* been run against
+macOS's own built-in awk (a BWK/"one true awk" derivative) -- the script
+deliberately avoids gawk-only features so it's expected to behave the same
+there, but that expectation is untested, not verified, on this project so
+far.
+
+Its CSV parser handles the cases that actually matter for this data:
+quoted fields containing commas (the common case -- `RightsDetail`, for
+instance), doubled `""` quote-escaping, `\r\n`-terminated files (a stray
+trailing `\r` is stripped from every line before it's used, so a
+Windows-authored CSV parses the same as a Unix-authored one), and -- via a
+standard technique, counting `"` characters and treating an odd running
+total as "still inside a quoted field" -- a field that legitimately
+contains a literal embedded newline, reassembling it correctly across
+however many physical lines it spans. None of this data's actual columns
+carry free-form multi-line text in practice, but the parser doesn't have to
+assume that; it detects and handles it either way, and the build's own
+summary output says so when it happens (`N row(s) had a quoted field
+containing a literal newline...`). The one remaining thing worth knowing:
+`identities[]`/`folders[]` array ORDER can come out differently from a
+PowerShell-built report for the same input (this script doesn't replicate
+the PowerShell version's SID-sort seeding order) -- the data is equivalent
+either way, since nothing in `AccessMap.html` depends on array order.
+
 What it gives you:
 
 - **A Summary view, shown by default on open** (and reachable any time via
@@ -513,14 +557,15 @@ looking at right now; (2) is there actually an `Errors_<timestamp>.log`
 passed; (3) did you regenerate the HTML *after* the run that produced
 those errors, not before.
 
-**Keep `Invoke-NTFSPermissionAudit.ps1`, `Build-AccessMapHtml.ps1`, and
-`AccessMapTemplate.html` as a matched set.** `Build-AccessMapHtml.ps1`
-needs `AccessMapTemplate.html` sitting in the same folder to run at all --
-it reads that file and copies it byte-for-byte as `AccessMap.html` in the
+**Keep `Invoke-NTFSPermissionAudit.ps1`, `Build-AccessMapHtml.ps1` (or its
+`Build-AccessMapHtml.sh` + `build.awk` bash/awk equivalent), and
+`AccessMapTemplate.html` as a matched set.** Either build script needs
+`AccessMapTemplate.html` sitting in the same folder to run at all -- it
+reads that file and copies it byte-for-byte as `AccessMap.html` in the
 output folder (its data is written separately, alongside it, as
 `AccessMap_data\manifest.js` and `AccessMap_data\share_N.js` -- see Step 3
-above) -- so update all three files together rather than swapping just one,
-and use the generated report's footer (`toolkit vX.X.X`) as a quick sanity
+above) -- so update all of them together rather than swapping just one, and
+use the generated report's footer (`toolkit vX.X.X`) as a quick sanity
 check that the version you're looking at is the one you think it is.
 
 ## Notes and caveats
