@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT
 <#
 .SYNOPSIS
-    Turns the CSVs from Invoke-NTFSPermissionAudit.ps1 into a single, self-contained,
-    interactive HTML "access map" -- a collapsible folder/subfolder tree with identity
-    detail at every level -- with no server, no database, and no external JavaScript
-    libraries. Open the resulting .html file directly in a browser.
+    Turns the CSVs from Invoke-NTFSPermissionAudit.ps1 into an interactive HTML
+    "access map" -- a collapsible folder/subfolder tree with identity detail at
+    every level -- with no server, no database, and no external JavaScript
+    libraries. Open the resulting AccessMap.html directly in a browser.
 
 .DESCRIPTION
     There isn't really a mainstream "BloodHound for filesystem ACLs": BloodHound itself
@@ -13,7 +13,36 @@
     running; the tools that do map filesystem access (Sysinternals AccessChk/AccessEnum,
     the NTFSSecurity module, commercial products like Varonis/Netwrix) are either
     CLI/text-only or need an agent and a server of their own. This script instead turns
-    the CSVs you already have into a single portable HTML file:
+    the CSVs you already have into a portable HTML report, written to -OutputFolder as:
+
+      AccessMap.html          -- the viewer itself: a byte-for-byte copy of
+                                  AccessMapTemplate.html, never templated or
+                                  rewritten by this script, so it's safe to
+                                  edit/diff/version-control directly.
+      AccessMap_data/
+        manifest.js            -- identities, folders, and every dashboard-level
+                                   total, loaded eagerly (small regardless of
+                                   audit size -- one entry per identity/folder,
+                                   never per access grant).
+        share_0.js, share_1.js, ... -- one file per top-level share
+                                   (\\server\share), each holding just that
+                                   share's access entries (folder x identity
+                                   ACE rows -- the part of the dataset that
+                                   actually gets huge). AccessMap.html fetches
+                                   a share's file the moment something on
+                                   screen needs it (a folder in that share is
+                                   selected, an identity with access there is
+                                   selected, or the relationship graph expands
+                                   into it) via a plain <script src> tag --
+                                   which works from file:// with no server,
+                                   unlike fetch()/XHR -- so the whole folder
+                                   still opens by just double-clicking
+                                   AccessMap.html, and a multi-gigabyte audit
+                                   opens (and its dashboard renders) instantly
+                                   instead of parsing everything up front.
+
+    Keep AccessMap.html and AccessMap_data/ together (copy/zip/email the whole
+    -OutputFolder) -- the HTML file on its own can't load its data.
 
       - Left sidebar: search/filter across identities and folders, tabbed.
       - Select a folder: info card (inheritance status) + a collapsible tree rooted at
@@ -32,11 +61,9 @@
     3 adds their own subfolders in turn, and so on; anything can also be expanded or
     collapsed manually regardless of the depth setting. Because it's a genuine
     subfolder hierarchy rather than a relationship graph, there's no way for something
-    outside a given folder's own contents to appear when browsing it. All data is
-    embedded directly in the HTML as JSON (not loaded via separate files), so it opens
-    correctly straight from disk (file://) with no web server and no internet access
-    required, and no external script/CSS files are referenced -- everything needed is
-    in the one .html file.
+    outside a given folder's own contents to appear when browsing it. AccessMap.html
+    itself never references the internet and needs no server -- see .DESCRIPTION above
+    for how its data is laid out and loaded.
 
 .PARAMETER InputFolder
     The output folder from a previous Invoke-NTFSPermissionAudit.ps1 run. Its CSV
@@ -46,24 +73,22 @@
     folder), the most recent set (by file timestamp) is used, with a warning --
     pass a folder containing just the one run you want if that's ambiguous.
 
-.PARAMETER OutputHtmlPath
-    Where to write the HTML file. Accepts either:
-      - A full path ending in a file name (e.g. C:\Reports\FinanceMap.html) --
-        used exactly as given; its parent folder is created if needed.
-      - An existing, empty directory -- a timestamped file name is generated
-        inside it (matching the source run's timestamp where possible).
-      - Omitted entirely -- defaults to a timestamped file name inside
-        -InputFolder.
-    If you pass an existing directory that is NOT empty, this deliberately
-    errors instead of guessing a file name into a folder that already has
-    content -- be explicit about the file name in that case (or point at a
-    different, empty output directory).
+.PARAMETER OutputFolder
+    Where to write the report -- AccessMap.html plus its AccessMap_data\ subfolder
+    (see .DESCRIPTION). Accepts either:
+      - An existing, empty directory, or a path that doesn't exist yet (created
+        automatically) -- used exactly as given.
+      - Omitted entirely -- defaults to a timestamped subfolder of -InputFolder
+        (e.g. C:\Audit\Run1\AccessMap_20260910_211500\).
+    If you pass an existing, NON-empty directory, this deliberately errors instead
+    of mixing generated files into a folder that already has other content --
+    point at a different/empty output location (or re-run with -Force to write
+    into it anyway).
 
 .PARAMETER Force
-    Only needed if the resolved output file already exists (most commonly
-    because you specified an exact -OutputHtmlPath that collides with a
-    previous file); without it, the script errors rather than silently
-    overwriting.
+    Only needed if -OutputFolder already exists and is non-empty; without it, the
+    script errors rather than silently mixing its output into existing content or
+    overwriting files there.
 
 .PARAMETER MaxEdgesPerNode
     How many subfolders to show under a single folder in the tree before
@@ -78,33 +103,36 @@
 .EXAMPLE
     .\Invoke-NTFSPermissionAudit.ps1 -Path '\\FS01\Shared\Finance' -ExpandGroups -OutputFolder C:\Audit\Run1
     .\Build-AccessMapHtml.ps1 -InputFolder C:\Audit\Run1
-    # Then just double-click C:\Audit\Run1\AccessMap.html
+    # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.5.1
+    Version: 0.6.0
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
     nodes show only name/type, no department/manager/account-state info).
 
-    For very large audits (hundreds of thousands of ACE rows), the resulting HTML file
-    embeds every row as JSON and can get large (tens of MB) -- still workable in a
-    modern browser, but if it feels sluggish, generate a map per subtree/share instead
-    of one for the entire server.
+    Access entries (edges) are partitioned by top-level share and written lazily-
+    loaded, so audits with millions of ACE rows still open and render their
+    dashboard instantly -- see .DESCRIPTION. The soft warnings below about very
+    large inputs are about THIS SCRIPT's own memory use while reading the source
+    CSV and building that partition, not about the browser experience of the
+    resulting report.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$InputFolder,
 
-    [string]$OutputHtmlPath,
+    [Alias('OutputHtmlPath')]
+    [string]$OutputFolder,
 
     [int]$MaxEdgesPerNode = 60,
 
     [switch]$Force
 )
 
-$ScriptVersion = '0.5.1'
+$ScriptVersion = '0.6.0'
 
 $ErrorActionPreference = 'Stop'
 
@@ -202,32 +230,33 @@ if ($identityPermsFile -match '_(\d{8}_\d{6})\.csv$') {
     }
 }
 
-# Resolve -OutputHtmlPath into a concrete target file path:
-#   - a path ending in an existing/creatable file name -> used exactly as given
-#   - an existing, EMPTY directory -> a timestamped file name is generated inside it
-#   - an existing, NON-empty directory -> error (deliberately -- don't guess a file
-#     name into a folder that already has other content in it)
-#   - omitted -> defaults inside -InputFolder
-if (-not $OutputHtmlPath) {
-    $OutputHtmlPath = Join-Path $InputFolder "AccessMap_$RunTimestamp.html"
+# Resolve -OutputFolder into a concrete target directory:
+#   - omitted -> a timestamped subfolder of -InputFolder
+#   - doesn't exist yet -> created
+#   - exists and is empty -> used as-is
+#   - exists and is NON-empty -> error unless -Force (deliberately -- don't mix
+#     this run's AccessMap.html/AccessMap_data into a folder that already has
+#     other content, most commonly a previous run's own output)
+if (-not $OutputFolder) {
+    $OutputFolder = Join-Path $InputFolder "AccessMap_$RunTimestamp"
 }
-elseif (Test-Path -LiteralPath $OutputHtmlPath -PathType Container) {
-    $existingItems = @(Get-ChildItem -LiteralPath $OutputHtmlPath -Force -ErrorAction SilentlyContinue)
-    if ($existingItems.Count -gt 0) {
-        throw "'$OutputHtmlPath' is an existing, non-empty folder. Specify a full file path for -OutputHtmlPath (e.g. '$(Join-Path $OutputHtmlPath "AccessMap_$RunTimestamp.html")'), or point at a different/empty output location, rather than have this script guess a file name into a folder that already has content."
+if (Test-Path -LiteralPath $OutputFolder) {
+    if ((Get-Item -LiteralPath $OutputFolder) -isnot [System.IO.DirectoryInfo]) {
+        throw "'$OutputFolder' already exists and is a file, not a folder. -OutputFolder must be a directory -- this script writes AccessMap.html plus an AccessMap_data subfolder into it, not a single file."
     }
-    $OutputHtmlPath = Join-Path $OutputHtmlPath "AccessMap_$RunTimestamp.html"
+    $existingItems = @(Get-ChildItem -LiteralPath $OutputFolder -Force -ErrorAction SilentlyContinue)
+    if ($existingItems.Count -gt 0 -and -not $Force) {
+        throw "'$OutputFolder' is an existing, non-empty folder. Re-run with -Force to write into it anyway (existing AccessMap.html/AccessMap_data from a previous run will be overwritten), or point -OutputFolder at a different/empty location."
+    }
 }
 else {
-    $parent = Split-Path -Path $OutputHtmlPath -Parent
-    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
+    New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
 }
-
-if ((Test-Path -LiteralPath $OutputHtmlPath) -and -not $Force) {
-    throw "Output file '$OutputHtmlPath' already exists. Re-run with -Force to overwrite it, or choose a different -OutputHtmlPath."
-}
+$OutputFolder = (Resolve-Path -LiteralPath $OutputFolder).ProviderPath
+$OutputHtmlPath = Join-Path $OutputFolder 'AccessMap.html'
+$DataDirName = 'AccessMap_data'
+$DataDirPath = Join-Path $OutputFolder $DataDirName
+New-Item -ItemType Directory -Path $DataDirPath -Force | Out-Null
 
 Write-Host "Build-AccessMapHtml v$ScriptVersion" -ForegroundColor Cyan
 
@@ -335,18 +364,18 @@ function Import-CsvRobust {
     finally { $parser.Dispose() }
 }
 
-# A very large source file is the scenario this streaming approach exists
+# A very large source file is the scenario the streaming reader above exists
 # for -- warn early and clearly rather than let someone wait through a long,
 # memory-heavy run only to have it fail uninformatively partway through. This
 # is a soft warning, not a hard block: the streaming reader itself has no
-# fixed ceiling, but the accumulated edges/identities/folders structures (and
-# the final embedded JSON) still need to fit in memory as one piece, since
-# the output format is a single self-contained HTML file. Splitting the scan
-# by share/subtree and generating one map per share is the actual scalable
-# way to use this tool at that size, not a workaround.
+# fixed ceiling, but this SCRIPT still accumulates identities/folders/edges
+# in memory as it goes (the final output is partitioned by share and written
+# incrementally -- see "Serialize and emit" below -- so the OUTPUT no longer
+# has to fit in memory or in a browser as one piece; this warning is only
+# about Build-AccessMapHtml.ps1's own working set while it reads the CSV).
 $identityPermsSizeMB = (Get-Item -LiteralPath $identityPermsPath).Length / 1MB
 if ($identityPermsSizeMB -gt 300) {
-    Write-Warning "$identityPermsPath is $([math]::Round($identityPermsSizeMB)) MB. This tool builds one self-contained HTML file with the entire dataset embedded in it, so very large inputs risk running out of memory or producing an HTML file too large for a browser to comfortably open, regardless of how efficiently the CSV itself is read. If this runs into trouble, the fix isn't a bigger machine -- it's scanning and mapping one share/subtree at a time (re-run Invoke-NTFSPermissionAudit.ps1 with -Path pointed at each major share separately, and build a map per share) rather than one combined report for an entire file server."
+    Write-Warning "$identityPermsPath is $([math]::Round($identityPermsSizeMB)) MB. This script still holds every identity/folder/access-entry in memory while it reads the CSV (the .NET object overhead per row is larger than the row's own text), so a very large input can still be slow or memory-heavy to BUILD even though the resulting report now loads its data lazily per share and stays fast to OPEN. If building it here runs into trouble, the fix is the same as ever -- scan and build one share/subtree at a time (re-run Invoke-NTFSPermissionAudit.ps1 with -Path pointed at each major share separately) and build a map per share on a machine with more memory, rather than one combined report for an entire file server in one pass."
 }
 
 Write-Host "Reading $identityPermsPath ..." -ForegroundColor Cyan
@@ -432,9 +461,9 @@ else {
 
 #region Build compact index structures -----------------------------------------
 
-# Rights are encoded as a small integer to keep the embedded JSON compact;
-# the HTML/JS template's RIGHTS_LABELS array (kept in the same order) turns
-# these back into text for display.
+# Rights are encoded as a small integer to keep the emitted JS compact; the
+# HTML/JS template's RIGHTS_LABELS array (kept in the same order) turns these
+# back into text for display.
 $rightsCodeMap = @{
     'Full Control'   = 0
     'Modify'         = 1
@@ -452,6 +481,25 @@ function ConvertTo-Bool {
     param([string]$Text)
     return ($Text -eq 'True' -or $Text -eq 'true' -or $Text -eq '1')
 }
+
+# A folder's "share" is its first two path segments (\\server\share) -- the
+# same convention AccessMapTemplate.html's own buildFolderTree() uses to find
+# share roots. This is what access entries get partitioned by: everything
+# under one share becomes one AccessMap_data\share_N.js file, lazy-loaded by
+# the browser only when something in that share is actually opened.
+function Get-ShareKeyFromPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $segs = $Path.Split('\') | Where-Object { $_ -ne '' }
+    if ($segs.Count -lt 2) { return $Path }   # shouldn't normally happen; falls back to the whole path as its own "share"
+    return '\\' + ($segs[0..1] -join '\')
+}
+
+# Broad, default principals whose Full Control / Modify grants get flagged in
+# the dashboard's "Observations" section (see .broadPrincipalGrants below) --
+# same set AccessMapTemplate.html used to filter for client-side; moved here
+# so the dashboard never needs a single access entry loaded to show this.
+$broadPrincipalNames = New-Object System.Collections.Generic.HashSet[string]
+@('everyone', 'authenticated users', 'domain users', 'users') | ForEach-Object { [void]$broadPrincipalNames.Add($_) }
 
 $identityIndex   = New-Object System.Collections.Generic.List[object]   # exported array
 $identityLookup  = @{}   # sid -> array index
@@ -484,6 +532,15 @@ function Get-OrAdd-Identity {
         memberCount   = if ($detail) { $detail.DirectMemberCount } else { $null }
         managedBy     = if ($detail) { $detail.ManagedBy } else { $null }
         notes     = if ($detail) { $detail.LookupNotes } else { $null }
+        # Populated while the main edge loop runs, below -- edgeCount/shareKeys
+        # so the client can know an identity's total reach and which
+        # AccessMap_data\share_N.js file(s) to lazy-load for it WITHOUT ever
+        # needing every share loaded just to answer "does this identity have
+        # any access, and where"; members so the relationship graph's "who
+        # else is in this group" traversal is global/eager and never needs to
+        # lazy-load every share a hub group happens to grant access in.
+        edgeCount = 0
+        shareKeys = (New-Object System.Collections.Generic.HashSet[string])
     }
     $identityIndex.Add($entry)
     $idx = $identityIndex.Count - 1
@@ -502,18 +559,34 @@ foreach ($sid in ($adDetails.Keys | Sort-Object)) {
 
 $folderIndex  = New-Object System.Collections.Generic.List[object]
 $folderLookup = @{}   # path -> array index
+$shareOrder   = New-Object System.Collections.Generic.List[string]   # share keys, first-seen order
+$shareFolderCounts = @{}   # share key -> distinct folder count
 
 function Get-OrAdd-Folder {
     param([string]$Path)
     if ($folderLookup.ContainsKey($Path)) { return $folderLookup[$Path] }
-    $folderIndex.Add([ordered]@{ path = $Path })
+    $shareKey = Get-ShareKeyFromPath -Path $Path
+    if (-not $shareFolderCounts.ContainsKey($shareKey)) {
+        $shareFolderCounts[$shareKey] = 0
+        [void]$shareOrder.Add($shareKey)
+    }
+    $shareFolderCounts[$shareKey]++
+    # broken is set to $true in-place, below, the moment the edge loop sees an
+    # InheritanceBrokenHere=True row for this folder -- precomputed here
+    # rather than left for the client to derive from edges (which, once
+    # partitioned by share, wouldn't all be loaded at once to derive it from).
+    $folderIndex.Add([ordered]@{ path = $Path; broken = $false; share = $shareKey })
     $idx = $folderIndex.Count - 1
     $folderLookup[$Path] = $idx
     return $idx
 }
 
-$edges = New-Object System.Collections.Generic.List[object]
+$edgesByShare = @{}   # share key -> List[object] of 7-element edge tuples (see below)
 $brokenInheritanceFolders = New-Object System.Collections.Generic.HashSet[int]
+$groupMembers = @{}   # groupIdx -> HashSet[int] of memberIdx (who lists this identity as GrantedViaGroup)
+$rightsDistribution = New-Object 'int[]' 6
+$broadPrincipalFolders = New-Object System.Collections.Generic.HashSet[int]
+$totalEdgeCount = 0
 $fileRowsExcluded = 0
 
 $i = 0
@@ -535,44 +608,109 @@ foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
 
     $identityIdx = Get-OrAdd-Identity -Sid $row.IdentitySid -Name $row.IdentityName -Type $row.IdentityType
     $folderIdx   = Get-OrAdd-Folder -Path $row.Path
+    $shareKey    = $folderIndex[$folderIdx].share
 
     $inheritanceBroken = ConvertTo-Bool $row.InheritanceBrokenHere
-    if ($inheritanceBroken) { [void]$brokenInheritanceFolders.Add($folderIdx) }
+    if ($inheritanceBroken -and -not $folderIndex[$folderIdx].broken) {
+        $folderIndex[$folderIdx].broken = $true
+        [void]$brokenInheritanceFolders.Add($folderIdx)
+    }
 
     $viaIdx = -1
     if ($row.GrantedViaGroup) {
         $viaKey = $row.GrantedViaGroup.ToLowerInvariant()
         if ($identityNameLookup.ContainsKey($viaKey)) { $viaIdx = $identityNameLookup[$viaKey] }
     }
+    if ($viaIdx -ge 0) {
+        if (-not $groupMembers.ContainsKey($viaIdx)) { $groupMembers[$viaIdx] = New-Object System.Collections.Generic.HashSet[int] }
+        [void]$groupMembers[$viaIdx].Add($identityIdx)
+    }
 
-    $edges.Add(@(
+    $rightsCode = Get-RightsCode $row.RightsSummary
+    $isDeny     = ConvertTo-Bool ($row.AccessControlType -eq 'Deny')
+
+    if (-not $edgesByShare.ContainsKey($shareKey)) { $edgesByShare[$shareKey] = New-Object System.Collections.Generic.List[object] }
+    $edgesByShare[$shareKey].Add(@(
         $folderIdx,
         $identityIdx,
-        (Get-RightsCode $row.RightsSummary),
+        $rightsCode,
         [int](ConvertTo-Bool $row.IsInheritedAce),
         [int]$inheritanceBroken,
-        [int](ConvertTo-Bool ($row.AccessControlType -eq 'Deny')),
+        [int]$isDeny,
         $viaIdx
     ))
+    $totalEdgeCount++
+    $rightsDistribution[$rightsCode]++
+
+    $identityIndex[$identityIdx].edgeCount++
+    [void]$identityIndex[$identityIdx].shareKeys.Add($shareKey)
+
+    # Dashboard "Observations" flag: a broad, default principal (Everyone,
+    # Authenticated Users, Domain Users, Users) holding Full Control(0) or
+    # Modify(1), not a Deny entry. Precomputed here (once, during the same
+    # pass) instead of left for the client to derive by scanning every edge,
+    # which -- once edges are partitioned per share -- wouldn't all be loaded
+    # at once to derive it from anyway.
+    if (-not $isDeny -and ($rightsCode -eq 0 -or $rightsCode -eq 1)) {
+        $shortName = ($row.IdentityName -split '\\')[-1]
+        if ($shortName -and $broadPrincipalNames.Contains($shortName.ToLowerInvariant())) {
+            [void]$broadPrincipalFolders.Add($folderIdx)
+        }
+    }
 }
 Write-Progress -Activity 'Building access map' -Completed
 
-Write-Host "Read $i permission row(s).   Identities: $($identityIndex.Count)   Folders: $($folderIndex.Count)   Edges: $($edges.Count)   Broken-inheritance folders: $($brokenInheritanceFolders.Count)" -ForegroundColor Green
+Write-Host "Read $i permission row(s).   Identities: $($identityIndex.Count)   Folders: $($folderIndex.Count)   Shares: $($shareOrder.Count)   Edges: $totalEdgeCount   Broken-inheritance folders: $($brokenInheritanceFolders.Count)" -ForegroundColor Green
 if ($fileRowsExcluded -gt 0) {
     Write-Host "$fileRowsExcluded file-level access row(s) from -IncludeFiles were excluded from this interactive map (folders/identities only) -- they're still in $identityPermsPath itself." -ForegroundColor Cyan
 }
-if ($edges.Count -gt 150000) {
-    Write-Warning "This is a large map ($($edges.Count) edges). The HTML file may be large and the browser may feel sluggish. Consider generating a map per share/subtree instead of the whole server if that happens."
+$maxShareEdges = 0
+foreach ($k in $edgesByShare.Keys) { if ($edgesByShare[$k].Count -gt $maxShareEdges) { $maxShareEdges = $edgesByShare[$k].Count } }
+if ($maxShareEdges -gt 150000) {
+    Write-Warning "At least one share has a large number of access entries ($maxShareEdges). That share's own AccessMap_data\share_N.js file may take a moment to fetch and the browser may feel sluggish once you open something in it, even though the rest of the report (dashboard, every other share) stays fast. If that share is itself the problem, re-scan just that subtree on its own (Invoke-NTFSPermissionAudit.ps1 -Path pointed at it directly) and build a separate, smaller map for it."
 }
 
 #endregion Build compact index structures ---------------------------------------
 
-#region Serialize and emit HTML -------------------------------------------------
+#region Serialize and emit -------------------------------------------------------
 
-$dataObject = [ordered]@{
+# identities[].shareKeys was accumulated as a HashSet[string] per identity
+# (see Get-OrAdd-Identity) to dedupe cheaply as rows streamed by; ConvertTo-Json
+# serializes it as a JSON array fine, but it's converted to a plain array here
+# anyway so identityIndex is plain, JSON-ready data with nothing PowerShell-
+# specific left in it. Likewise fold in each identity's members (the inverse
+# of GrantedViaGroup, built into $groupMembers above) as a plain int array.
+for ($gi = 0; $gi -lt $identityIndex.Count; $gi++) {
+    $identityIndex[$gi].shareKeys = @($identityIndex[$gi].shareKeys)
+    if ($groupMembers.ContainsKey($gi)) {
+        $identityIndex[$gi]['members'] = @($groupMembers[$gi])
+    }
+}
+
+$shareManifest = New-Object System.Collections.Generic.List[object]
+for ($si = 0; $si -lt $shareOrder.Count; $si++) {
+    $shareKey = $shareOrder[$si]
+    $edgeCountForShare = if ($edgesByShare.ContainsKey($shareKey)) { $edgesByShare[$shareKey].Count } else { 0 }
+    $shareManifest.Add([ordered]@{
+        key         = $shareKey
+        label       = $shareKey
+        file        = "share_$si.js"
+        folderCount = $shareFolderCounts[$shareKey]
+        edgeCount   = $edgeCountForShare
+    })
+}
+
+$manifestObject = [ordered]@{
     identities = $identityIndex
     folders    = $folderIndex
-    edges      = $edges
+    shares     = $shareManifest
+    totalEdgeCount = $totalEdgeCount
+    rightsDistribution = $rightsDistribution
+    broadPrincipalGrants = [ordered]@{
+        folderCount = $broadPrincipalFolders.Count
+        folderIdxs  = @($broadPrincipalFolders)
+    }
+    maxEdgesPerNode = $MaxEdgesPerNode
     generatedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     sourceFolder = $InputFolder
     toolkitVersion = $ScriptVersion
@@ -580,19 +718,74 @@ $dataObject = [ordered]@{
     scanComplete = $scanComplete
     truncatedRowsDropped = $script:truncatedRowsDropped
 }
-Write-Verbose "Serializing to JSON..."
-$json = $dataObject | ConvertTo-Json -Depth 6 -Compress
+
+Write-Verbose "Writing $DataDirName\manifest.js ..."
+$manifestJson = $manifestObject | ConvertTo-Json -Depth 6 -Compress
+Set-Content -LiteralPath (Join-Path $DataDirPath 'manifest.js') -Value "const ACCESS_MAP_MANIFEST = $manifestJson;" -Encoding UTF8 -NoNewline
+
+function Write-ShareChunkFile {
+    # Edge rows are plain numeric 7-tuples (see the edge loop above) -- no
+    # strings, no escaping needed -- so this is written directly as text
+    # instead of through ConvertTo-Json. For a collection this size (this is
+    # where the bulk of a large audit's data actually lives), that's both far
+    # faster than ConvertTo-Json's reflection-based serializer and sidesteps
+    # its well-known quirk of collapsing a single-element top-level array
+    # down to a bare scalar (a real case here: a share can easily have
+    # exactly one access entry).
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[object]]$EdgeRows,
+        [Parameter(Mandatory)][string]$ShareKey,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('registerShareChunk(')
+    [void]$sb.Append(($ShareKey | ConvertTo-Json -Compress))   # a single string -- not subject to the array-collapse quirk
+    [void]$sb.Append(',[')
+    $first = $true
+    foreach ($e in $EdgeRows) {
+        if (-not $first) { [void]$sb.Append(',') }
+        $first = $false
+        [void]$sb.Append('[')
+        [void]$sb.Append([string]::Join(',', $e))
+        [void]$sb.Append(']')
+    }
+    [void]$sb.Append(']);')
+    Set-Content -LiteralPath $Path -Value $sb.ToString() -Encoding UTF8 -NoNewline
+}
+
+for ($si = 0; $si -lt $shareOrder.Count; $si++) {
+    $shareKey = $shareOrder[$si]
+    # NOTE: deliberately NOT "$rows = if (...) { $edgesByShare[$shareKey] } else {...}" --
+    # that form pipes the List through PowerShell's success-output stream to produce
+    # the if-expression's value, which enumerates it; a List with exactly one element
+    # (a real case here -- a share with exactly one access entry) then collapses to
+    # that bare element instead of staying a 1-item List. Confirmed live with pwsh
+    # before landing this fix. Plain assignment inside each branch sidesteps the
+    # pipeline entirely, so no enumeration happens regardless of Count.
+    if ($edgesByShare.ContainsKey($shareKey)) {
+        $rows = $edgesByShare[$shareKey]
+    }
+    else {
+        $rows = New-Object System.Collections.Generic.List[object]
+    }
+    $chunkPath = Join-Path $DataDirPath "share_$si.js"
+    Write-Verbose "Writing $DataDirName\share_$si.js ($($rows.Count) edge(s) for $shareKey) ..."
+    Write-ShareChunkFile -EdgeRows $rows -ShareKey $shareKey -Path $chunkPath
+}
 
 $templatePath = Join-Path $PSScriptRoot 'AccessMapTemplate.html'
 if (-not (Test-Path -LiteralPath $templatePath)) {
     throw "Template file not found: $templatePath (expected alongside this script)."
 }
-$template = Get-Content -LiteralPath $templatePath -Raw
+# AccessMapTemplate.html is never templated or rewritten -- it's copied
+# byte-for-byte as AccessMap.html and loads its data at runtime from the
+# AccessMap_data\ files just written above (see the .DESCRIPTION at the top
+# of this script). That's what makes the viewer itself safe to edit, diff,
+# and version-control directly, independent of any one run's data.
+Copy-Item -LiteralPath $templatePath -Destination $OutputHtmlPath -Force
 
-$html = $template.Replace('/*__ACCESS_MAP_DATA__*/null', $json).Replace('__MAX_EDGES_PER_NODE__', $MaxEdgesPerNode)
-
-Set-Content -LiteralPath $OutputHtmlPath -Value $html -Encoding UTF8
 Write-Host "Access map written to $OutputHtmlPath" -ForegroundColor Green
-Write-Host "Open it directly in a browser -- no server required." -ForegroundColor Yellow
+Write-Host "($DataDirName\ holds its data -- keep the two together; copy/zip/email the whole '$OutputFolder' folder.)" -ForegroundColor Yellow
+Write-Host "Open AccessMap.html directly in a browser -- no server required." -ForegroundColor Yellow
 
-#endregion Serialize and emit HTML ----------------------------------------------
+#endregion Serialize and emit -----------------------------------------------------

@@ -168,17 +168,127 @@
   <footer id="footerLine"></footer>
 </div>
 
+<script src="AccessMap_data/manifest.js"></script>
 <script>
 'use strict';
 
 /* ---------------------------------------------------------------------------
-   Embedded data. Build-AccessMapHtml.ps1 replaces the literal below with the
-   real JSON payload (identities/folders/edges) at generation time, so this
-   file is fully self-contained -- no fetch(), no external files, works from
-   file:// with no server.
+   Data loading.
+
+   Build-AccessMapHtml.ps1 copies THIS FILE byte-for-byte to AccessMap.html --
+   nothing on this page is templated or rewritten at generation time. Every
+   run's actual data lives next to it in a sibling AccessMap_data/ folder:
+
+     AccessMap.html
+     AccessMap_data/
+       manifest.js     -- identities, folders, and every dashboard-level
+                           total/observation, loaded eagerly (small
+                           regardless of audit size: one entry per identity
+                           and per folder, never per access grant)
+       share_0.js       -- one file per top-level share (\\server\share),
+       share_1.js ...       each holding just that share's access edges
+                             (folder x identity ACE rows -- the part of the
+                             dataset that actually gets huge)
+
+   manifest.js is loaded up front via the <script src> above -- <script src>
+   works from file:// with no CORS restrictions and no server, unlike
+   fetch()/XHR, so this stays a "just open it" report. A share_N.js file is
+   only fetched the moment something on screen actually needs that share's
+   access entries (a folder is selected, an identity with access there is
+   selected, or the relationship graph expands into it) -- see
+   ensureShareLoaded() below. This is what lets a multi-gigabyte audit open
+   instantly instead of parsing the whole thing before showing anything.
 --------------------------------------------------------------------------- */
-const DATA = /*__ACCESS_MAP_DATA__*/null;
-const MAX_EDGES_PER_NODE = __MAX_EDGES_PER_NODE__;
+const ACCESS_MAP_DATA_DIR = 'AccessMap_data';
+const MAX_EDGES_PER_NODE = ACCESS_MAP_MANIFEST.maxEdgesPerNode;
+
+// DATA mirrors the old all-in-one shape everything below was written
+// against. identities/folders and the rest are eager (straight off the
+// manifest); edges starts EMPTY and grows in place as share chunks load
+// (see mergeEdges) -- every place below that reads DATA.edges/byFolder/
+// byIdentity/adjacency for a specific folder or identity is only ever
+// reached after that folder's/identity's own share(s) are confirmed loaded.
+const DATA = {
+  identities: ACCESS_MAP_MANIFEST.identities,
+  folders: ACCESS_MAP_MANIFEST.folders,
+  edges: [],
+  generatedAt: ACCESS_MAP_MANIFEST.generatedAt,
+  sourceFolder: ACCESS_MAP_MANIFEST.sourceFolder,
+  toolkitVersion: ACCESS_MAP_MANIFEST.toolkitVersion,
+  scanErrors: ACCESS_MAP_MANIFEST.scanErrors,
+  scanComplete: ACCESS_MAP_MANIFEST.scanComplete,
+  truncatedRowsDropped: ACCESS_MAP_MANIFEST.truncatedRowsDropped
+};
+
+/* ------------------------------ Lazy share data ---------------------------- */
+
+const shareByKey = new Map();
+(ACCESS_MAP_MANIFEST.shares || []).forEach(s => shareByKey.set(s.key, s));
+
+const loadedShares = new Set();      // share keys whose edges are in DATA.edges/byFolder/byIdentity/adjacency
+const shareLoadPromises = new Map(); // share key -> { promise, resolve, reject } while a chunk is in flight
+
+// Called by each share_N.js chunk file itself, as the very last thing it
+// does, once the <script> tag for it has finished loading.
+function registerShareChunk(shareKey, edgeRows) {
+  if (loadedShares.has(shareKey)) return; // safety net, shouldn't normally happen
+  loadedShares.add(shareKey);
+  mergeEdges(edgeRows);
+  const pending = shareLoadPromises.get(shareKey);
+  if (pending) pending.resolve();
+}
+
+function ensureShareLoaded(shareKey) {
+  if (!shareKey || loadedShares.has(shareKey)) return Promise.resolve();
+  const existing = shareLoadPromises.get(shareKey);
+  if (existing) return existing.promise;
+  const shareMeta = shareByKey.get(shareKey);
+  if (!shareMeta) return Promise.resolve(); // unknown key -- nothing to load
+
+  let resolveFn, rejectFn;
+  const promise = new Promise((res, rej) => { resolveFn = res; rejectFn = rej; });
+  shareLoadPromises.set(shareKey, { promise, resolve: resolveFn, reject: rejectFn });
+
+  const script = document.createElement('script');
+  script.src = ACCESS_MAP_DATA_DIR + '/' + shareMeta.file;
+  script.onerror = () => {
+    shareLoadPromises.delete(shareKey);
+    rejectFn(new Error(`Couldn't load ${script.src} -- the AccessMap_data folder may have been moved, renamed, or not copied along with this HTML file.`));
+  };
+  document.head.appendChild(script);
+  return promise;
+}
+
+function ensureSharesLoaded(shareKeys) {
+  return Promise.all(Array.from(new Set((shareKeys || []).filter(Boolean))).map(ensureShareLoaded));
+}
+
+function linkAdjacency(k1, k2, edgeDescr) {
+  if (!adjacency.has(k1)) adjacency.set(k1, new Map());
+  if (!adjacency.has(k2)) adjacency.set(k2, new Map());
+  const m1 = adjacency.get(k1), m2 = adjacency.get(k2);
+  if (!m1.has(k2)) m1.set(k2, { edges: [] });
+  if (!m2.has(k1)) m2.set(k1, { edges: [] });
+  m1.get(k2).edges.push(edgeDescr);
+  m2.get(k1).edges.push(edgeDescr);
+}
+
+function mergeEdges(edgeRows) {
+  edgeRows.forEach(e => {
+    const ei = DATA.edges.length;
+    DATA.edges.push(e);
+    const folderIdx = e[0], identityIdx = e[1];
+    if (!byIdentity.has(identityIdx)) byIdentity.set(identityIdx, []);
+    byIdentity.get(identityIdx).push(ei);
+    if (!byFolder.has(folderIdx)) byFolder.set(folderIdx, []);
+    byFolder.get(folderIdx).push(ei);
+    linkAdjacency('f:' + folderIdx, 'i:' + identityIdx, { type: 'access', e, ei });
+    // Group-membership adjacency ("who else is a member of this group") is
+    // NOT built here -- it's global and cheap, so it's built once, eagerly,
+    // in precompute() from manifest data, and never depends on which
+    // share's access edges happen to be loaded.
+  });
+}
 
 const RIGHTS_LABELS = ['Full Control', 'Modify', 'Read & Execute', 'Read', 'Write', 'Special'];
 // Higher = more "interesting" to show first when a node has more neighbors
@@ -215,7 +325,9 @@ let state = {
 const RING_SPACING = 130;
 const HUB_DEGREE_THRESHOLD = 15;
 const GRAPH_NODE_CAP = 600; // safety cap on total nodes drawn in the graph, regardless of depth
-let adjacency = new Map(); // 'f:N'|'i:N' -> Map<neighborKey, {edges:[{type,e,ei}]}> -- built in precompute()
+let adjacency = new Map(); // 'f:N'|'i:N' -> Map<neighborKey, {edges:[{type,e,ei}]}> -- membership links built
+                            // once in precompute(); access links added incrementally by mergeEdges() as
+                            // each share's chunk loads (see linkAdjacency())
 
 /* ------------------------------- Precompute ------------------------------- */
 
@@ -266,20 +378,22 @@ function computeTopmostRoots(candidateIndices) {
 }
 
 function precompute() {
-  DATA.edges.forEach((e, ei) => {
-    const folderIdx = e[0], identityIdx = e[1];
-    if (!byIdentity.has(identityIdx)) byIdentity.set(identityIdx, []);
-    byIdentity.get(identityIdx).push(ei);
-    if (!byFolder.has(folderIdx)) byFolder.set(folderIdx, []);
-    byFolder.get(folderIdx).push(ei);
-  });
-
   buildFolderTree();
-  adjacency = buildAdjacency();
 
-  // Per-folder broken-inheritance flag (edge index 4), OR'd across its edges.
-  DATA.folders.forEach((f, fi) => { f.broken = false; });
-  DATA.edges.forEach(e => { if (e[4]) DATA.folders[e[0]].broken = true; });
+  // folders[].broken is precomputed by Build-AccessMapHtml.ps1 (it already
+  // knows this from InheritanceBrokenHere while it builds each edge) -- no
+  // edges need to be loaded client-side to know which folders show the
+  // "broken inheritance" badge.
+
+  // Group-membership relationships ("who else is a member of this group")
+  // are also global and cheap -- Build-AccessMapHtml.ps1 already resolves
+  // every GrantedViaGroup while it streams IdentityPermissions.csv once, so
+  // this is built here, eagerly, and never needs a share chunk loaded.
+  DATA.identities.forEach((idn, groupIdx) => {
+    (idn.members || []).forEach(memberIdx => {
+      linkAdjacency('i:' + groupIdx, 'i:' + memberIdx, { type: 'membership' });
+    });
+  });
 
   // Per-identity disabled/dormant/locked flags, precomputed once.
   const now = new Date();
@@ -396,25 +510,49 @@ function goBack() {
   if (state.history.length === 0) return;
   const prev = state.history.pop();
   document.getElementById('backBtn').disabled = state.history.length === 0;
-  if (prev.kind === 'identity') renderIdentity(prev.idx); else renderFolder(prev.idx);
-  state.selected = prev;
+  if (prev.kind === 'identity') selectIdentity(prev.idx, false); else selectFolder(prev.idx, false);
 }
 
-function selectIdentity(idx, recordHistory) {
+let selectionToken = 0;
+
+async function selectIdentity(idx, recordHistory) {
   if (recordHistory) pushHistory();
   state.selected = { kind: 'identity', idx };
   state.tableSort = { col: null, dir: 1 };
   state.tableFilter = '';
   setTab('identities');
+  const token = ++selectionToken;
+  // Usually resolves on the same tick (already loaded, or this identity has
+  // no access anywhere) -- the placeholder only actually shows for however
+  // long a genuinely new share chunk takes to fetch and register.
+  document.getElementById('content').innerHTML = '<div id="welcome">Loading\u2026</div>';
+  try {
+    await ensureSharesLoaded(DATA.identities[idx].shareKeys);
+  } catch (err) {
+    if (token !== selectionToken) return;
+    document.getElementById('content').innerHTML = `<div id="welcome">Could not load this identity's access data: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (token !== selectionToken) return; // a newer selection superseded this one
   renderIdentity(idx);
 }
 
-function selectFolder(idx, recordHistory) {
+async function selectFolder(idx, recordHistory) {
   if (recordHistory) pushHistory();
   state.selected = { kind: 'folder', idx };
   state.tableSort = { col: null, dir: 1 };
   state.tableFilter = '';
   setTab('folders');
+  const token = ++selectionToken;
+  document.getElementById('content').innerHTML = '<div id="welcome">Loading\u2026</div>';
+  try {
+    await ensureShareLoaded(DATA.folders[idx].share);
+  } catch (err) {
+    if (token !== selectionToken) return;
+    document.getElementById('content').innerHTML = `<div id="welcome">Could not load this folder's access data: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (token !== selectionToken) return;
   renderFolder(idx);
 }
 
@@ -575,29 +713,6 @@ function svgEl(tag, attrs) {
   return el;
 }
 
-function buildAdjacency() {
-  const adj = new Map();
-  function ensure(key) { if (!adj.has(key)) adj.set(key, new Map()); return adj.get(key); }
-  function link(k1, k2, edgeDescr) {
-    const m1 = ensure(k1), m2 = ensure(k2);
-    if (!m1.has(k2)) m1.set(k2, { edges: [] });
-    if (!m2.has(k1)) m2.set(k1, { edges: [] });
-    m1.get(k2).edges.push(edgeDescr);
-    m2.get(k1).edges.push(edgeDescr);
-  }
-  // Two kinds of relationship become graph edges: the folder<->identity access
-  // ACE itself, and (when the ACE was granted via a group) an identity<->group
-  // membership edge -- so multi-hop expansion can step across "who else is in
-  // this group" and "what else does this group's access apply to", not just
-  // one folder's direct ACL.
-  DATA.edges.forEach((e, ei) => {
-    const fKey = 'f:' + e[0], iKey = 'i:' + e[1];
-    link(fKey, iKey, { type: 'access', e, ei });
-    if (e[6] >= 0) link(iKey, 'i:' + e[6], { type: 'membership', e, ei });
-  });
-  return adj;
-}
-
 function bestEdgeScore(edgeInfo) {
   let best = -1;
   edgeInfo.edges.forEach(d => {
@@ -626,12 +741,16 @@ function isExpandable(key, isCenter) {
   const idn = DATA.identities[idx];
   if (idn.type === 'Unresolved' || idn.type === 'Well-known / Local') return 'none';
   if (idn.type === 'Group') return 'membershipOnly';
-  const degree = (byIdentity.get(idx) || []).length;
+  // edgeCount is precomputed server-side across the WHOLE dataset (not just
+  // shares loaded so far) -- using byIdentity's size here instead would
+  // under-count a hub identity until every one of its shares happened to
+  // already be loaded, letting a real hub slip through as 'full'.
+  const degree = idn.edgeCount || 0;
   if (degree > HUB_DEGREE_THRESHOLD) return 'membershipOnly';
   return 'full';
 }
 
-function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
+async function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
   const visited = new Map();
   visited.set(centerKey, { hop: 0, from: null });
   let frontier = [centerKey];
@@ -640,9 +759,19 @@ function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
 
   for (let hop = 1; hop <= depth && visited.size < cap; hop++) {
     const candidates = [];
-    frontier.forEach(fKey => {
+    for (const fKey of frontier) {
       const mode = isExpandable(fKey, fKey === centerKey);
-      if (mode === 'none') return;
+      if (mode === 'none') continue;
+      // A folder's own share is always already loaded by the time it can
+      // appear here (it was only ever discovered via an edge that came from
+      // a loaded chunk). An identity being expanded 'full' reveals its own
+      // access edges too, which may live in shares not loaded yet -- load
+      // them now. 'membershipOnly' only needs membership links, which are
+      // global/eager (see precompute()), so nothing to load for that case.
+      if (mode === 'full' && fKey[0] === 'i') {
+        const idx = parseInt(fKey.slice(2), 10);
+        await ensureSharesLoaded(DATA.identities[idx].shareKeys);
+      }
       const nbrs = adjacency.get(fKey) || new Map();
       const fromThisSource = [];
       nbrs.forEach((edgeInfo, nKey) => {
@@ -653,7 +782,7 @@ function buildEgoGraph(centerKey, depth, cap, perSourceCap) {
       fromThisSource.sort((a, b) => b.score - a.score);
       if (fromThisSource.length > perSourceCap) truncated = true;
       candidates.push(...fromThisSource.slice(0, perSourceCap));
-    });
+    }
     const bestByKey = new Map();
     candidates.forEach(c => {
       const existing = bestByKey.get(c.nKey);
@@ -738,12 +867,42 @@ function edgeDisplayInfo(edgeInfo) {
   return { label, color: EDGE_COLORS[e[2]], dashed: !!e[3] };
 }
 
+let graphRenderToken = 0;
+
 function renderRelationshipGraph(kind, idx, onNavigate, onDepthChange) {
+  // Returns a placeholder synchronously (so the caller can appendChild it
+  // right away, same as before) and swaps in the real graph once this
+  // node's own share(s) -- and anything the BFS expands into -- are loaded.
+  const holder = document.createElement('div');
+  holder.className = 'graphWrap';
+  const note = document.createElement('div');
+  note.className = 'graphNote';
+  note.textContent = 'Loading relationship data\u2026';
+  holder.appendChild(note);
+
   const centerKey = (kind === 'folder' ? 'f:' : 'i:') + idx;
   const depth = state.graphDepth === Infinity ? 999 : state.graphDepth;
-  const g = buildEgoGraph(centerKey, depth, GRAPH_NODE_CAP, MAX_EDGES_PER_NODE);
-  const positions = layoutRadial(g.layers, g.visited);
+  const token = ++graphRenderToken;
 
+  (async () => {
+    try {
+      if (kind === 'folder') await ensureShareLoaded(DATA.folders[idx].share);
+      else await ensureSharesLoaded(DATA.identities[idx].shareKeys);
+      const g = await buildEgoGraph(centerKey, depth, GRAPH_NODE_CAP, MAX_EDGES_PER_NODE);
+      if (token !== graphRenderToken) return; // a newer selection superseded this one
+      const positions = layoutRadial(g.layers, g.visited);
+      const built = renderRelationshipGraphInner(g, positions, centerKey, onNavigate, onDepthChange);
+      holder.replaceWith(built);
+    } catch (err) {
+      if (token !== graphRenderToken) return;
+      note.textContent = 'Could not load relationship data: ' + err.message;
+    }
+  })();
+
+  return holder;
+}
+
+function renderRelationshipGraphInner(g, positions, centerKey, onNavigate, onDepthChange) {
   const wrap = document.createElement('div');
   wrap.className = 'graphWrap';
 
@@ -1246,7 +1405,6 @@ function renderFolder(idx) {
 
 /* ------------------------------- Summary view --------------------------------- */
 
-const BROAD_PRINCIPAL_NAMES = new Set(['everyone', 'authenticated users', 'domain users', 'users']);
 const IDENTITY_TYPE_ORDER = ['User', 'Group', 'Computer', 'Well-known / Local', 'Unresolved'];
 const IDENTITY_TYPE_COLORS = { User: '#4da3ff', Group: '#c084fc', Computer: '#7d8a99', 'Well-known / Local': '#5a6472', Unresolved: '#ff5d5d' };
 
@@ -1269,34 +1427,28 @@ function computeUserHealth() {
   return { total, enabled, disabled, locked, dormant };
 }
 
+// These three feed the dashboard, which has to render correctly with ZERO
+// share chunks loaded (that's the whole point -- opening the report and
+// seeing the summary shouldn't cost a multi-gigabyte parse). Each one used
+// to get its answer by scanning every edge; now that edges only exist for
+// shares someone has actually drilled into, that same scan would silently
+// under-report on an untouched dataset. Build-AccessMapHtml.ps1 already
+// visits every edge once while it builds them, so these are precomputed
+// there instead and just read back here.
+
 function computeRightsDistribution() {
-  const counts = [0, 0, 0, 0, 0, 0];
-  DATA.edges.forEach(e => { counts[e[2]]++; });
-  return counts;
+  return (ACCESS_MAP_MANIFEST.rightsDistribution || [0, 0, 0, 0, 0, 0]).slice();
 }
 
 function computeBroadPrincipalGrants() {
-  const folderSet = new Set();
-  const grants = [];
-  DATA.edges.forEach(e => {
-    if (e[5]) return; // Deny isn't a grant
-    if (e[2] !== 0 && e[2] !== 1) return; // Full Control(0) / Modify(1) only
-    const idn = DATA.identities[e[1]];
-    const shortName = (idn.name.split('\\').pop() || idn.name).toLowerCase();
-    if (BROAD_PRINCIPAL_NAMES.has(shortName)) {
-      folderSet.add(e[0]);
-      grants.push({ folderIdx: e[0], identityName: idn.name, rights: e[2] });
-    }
-  });
-  return { folderCount: folderSet.size, grants };
+  const b = ACCESS_MAP_MANIFEST.broadPrincipalGrants || { folderCount: 0, folderIdxs: [] };
+  return { folderCount: b.folderCount, folderIdxs: b.folderIdxs || [] };
 }
 
 function computeStaleAccessCounts() {
-  const withEdges = new Set();
-  DATA.edges.forEach(e => withEdges.add(e[1]));
   let dormantWithAccess = 0, unresolvedWithAccess = 0;
-  DATA.identities.forEach((idn, idx) => {
-    if (!withEdges.has(idx)) return;
+  DATA.identities.forEach(idn => {
+    if (!(idn.edgeCount > 0)) return; // precomputed total across ALL shares, not just loaded ones
     if (idn.flagDisabled || idn.flagDormant || idn.flagLocked) dormantWithAccess++;
     if (idn.type === 'Unresolved') unresolvedWithAccess++;
   });
@@ -1467,7 +1619,7 @@ function filterToBroadGrantFolders() {
   const panel = document.getElementById('listPanel');
   panel.innerHTML = '';
   const broad = computeBroadPrincipalGrants();
-  const folderIdxs = Array.from(new Set(broad.grants.map(g => g.folderIdx)));
+  const folderIdxs = broad.folderIdxs;
   folderIdxs.forEach(idx => {
     const f = DATA.folders[idx];
     const div = document.createElement('div');
@@ -1589,7 +1741,7 @@ function renderSummaryView() {
   const grid = document.createElement('div');
   grid.className = 'summaryGrid';
   grid.appendChild(statCard(DATA.identities.length, 'Identities total', {}));
-  grid.appendChild(statCard(DATA.edges.length, 'Access entries total', {}));
+  grid.appendChild(statCard(ACCESS_MAP_MANIFEST.totalEdgeCount || 0, 'Access entries total', {}));
   grid.appendChild(statCard(userHealth.total, `Users (${userHealth.enabled} enabled, ${userHealth.disabled} disabled)`, {}));
   grid.appendChild(statCard(idBreakdown.Group || 0, 'Groups', {}));
   grid.appendChild(statCard(idBreakdown.Computer || 0, 'Computer / service accounts', {}));

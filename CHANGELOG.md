@@ -2,6 +2,65 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - Access map: lazy per-share loading, skeleton/data split
+
+### Changed -- `Build-AccessMapHtml.ps1` / `AccessMapTemplate.html`
+- **Report output is now a folder, not one file.** `-OutputHtmlPath` is
+  replaced by `-OutputFolder` (old name still accepted as an alias, but it
+  now names a *directory*, not a file path). Each run writes:
+  - `AccessMap.html` -- the viewer, now a byte-for-byte copy of
+    `AccessMapTemplate.html`. Nothing is templated or rewritten into it
+    anymore, so the template can be edited, diffed, and version-controlled
+    directly, independent of any run's data.
+  - `AccessMap_data\manifest.js` -- identities, folders, and every
+    dashboard-level total/observation (rights distribution, broad-principal
+    grants, broken-inheritance folders, dormant identities), loaded eagerly.
+    Small regardless of audit size -- one entry per identity/folder, never
+    per access grant.
+  - `AccessMap_data\share_N.js` -- one file per top-level share
+    (`\\server\share`), holding just that share's access entries (the part
+    of the dataset that actually gets huge). `AccessMap.html` fetches a
+    share's file via a plain `<script src>` tag (works from `file://`, no
+    server, unlike `fetch()`/XHR) the moment something on screen needs it --
+    a folder in that share is opened, an identity with access there is
+    selected, or the relationship graph expands into it.
+  - Keep `AccessMap.html` and `AccessMap_data\` together -- the HTML file
+    can't load its data on its own. Copy/zip/email the whole output folder.
+- **Previously, the entire dataset (every access entry, for every share) was
+  embedded as one inline JSON blob in a single HTML file.** For a 1+ GB
+  `IdentityPermissions.csv`, that meant the browser had to parse a
+  multi-hundred-MB-to-GB string before showing anything at all -- the
+  dashboard included. Now the dashboard, sidebar search, and both quick
+  filters render instantly with zero access entries loaded (their
+  aggregates are precomputed server-side into `manifest.js`), and opening a
+  specific folder or identity only fetches the one or few shares it
+  actually touches.
+- `-Force` now guards writing into an existing, non-empty `-OutputFolder`
+  (previously it guarded overwriting a single existing output file).
+- The "large map" warning is rescoped: it used to warn about the resulting
+  HTML file being slow for a *browser* to open; since the browser now only
+  ever loads one share at a time, that warning now instead flags when this
+  *script's own* memory use while reading a very large source CSV, or a
+  single share with an unusually large number of access entries, might be
+  worth splitting into a per-subtree scan.
+- Bumped to 0.6.0 for both scripts to reflect this file-layout change
+  (`Build-AccessMapHtml.ps1`'s own version banner; `AccessMapTemplate.html`
+  has no separate version string, it inherits the toolkit's).
+
+### Fixed -- found by actually running this against generated test data
+- A share with **exactly one** access entry got its edge row corrupted into
+  seven separate single-value arrays instead of one seven-value array
+  (`registerShareChunk(key, [[0],[0],[3],[0],[0],[0],[-1]])` instead of
+  `[[0,0,3,0,0,0,-1]]`), silently breaking that share's data. Root cause:
+  `$rows = if (...) { $edgesByShare[$shareKey] } else {...}` pipes the List
+  through PowerShell's success-output stream to produce the if-expression's
+  value, which enumerates it -- collapsing a List with exactly one element
+  down to that bare element instead of preserving it as a 1-item List (this
+  is the same family of behavior as the well-known single-element-array
+  ConvertTo-Json quirk noted above, just triggered by an if-expression
+  assignment instead). Fixed by assigning inside each branch explicitly
+  instead of relying on the if-statement's own piped-through output.
+
 ## [0.5.1] - Identity-backfill fix for -Resume, plus troubleshooting docs
 
 ### Fixed -- found during a deliberate, requested review of the 0.5.0 changes

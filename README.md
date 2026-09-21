@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.5.1. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.6.0. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -33,10 +33,12 @@ the scripts never hard-fail just because one optional piece is missing.
    Errors_<timestamp>.log      (access-denied / path-too-long, etc.)
         |
         v
-3. Build-AccessMapHtml.ps1            -- OPTIONAL: turn the CSVs into one
-        |                                 interactive HTML file
+3. Build-AccessMapHtml.ps1            -- OPTIONAL: turn the CSVs into an
+        |                                 interactive HTML report
         v
-   AccessMap.html   -- open directly in a browser, no server required
+   AccessMap_<timestamp>\
+     AccessMap.html        (open directly in a browser, no server required)
+     AccessMap_data\       (its data -- keep the two together)
 ```
 
 Step 1 is genuinely optional. **`Invoke-NTFSPermissionAudit.ps1` can be pointed
@@ -315,11 +317,15 @@ rather than silent.
 .\Build-AccessMapHtml.ps1 -InputFolder C:\Audit\Run1
 ```
 
-Produces `AccessMap.html` in that folder. Double-click it -- it's a single,
-self-contained file with everything (data, CSS, JS) embedded inline, so it
-opens straight from disk with no server, no database, no internet access,
-and no separately-installed JavaScript library. (There isn't really a
-mainstream "BloodHound for NTFS permissions" -- BloodHound itself maps AD
+Produces a timestamped folder (e.g. `AccessMap_20260910_211500\`) inside
+`C:\Audit\Run1` containing `AccessMap.html` plus an `AccessMap_data\`
+subfolder. Double-click `AccessMap.html` -- it needs no server, no database,
+no internet access, and no separately-installed JavaScript library, so it
+opens straight from disk. Its data lives in the sibling `AccessMap_data\`
+folder and is fetched lazily, one top-level share at a time, as you actually
+open things -- keep the two together (copy/zip/email the whole output
+folder) since the HTML file can't load its data on its own. (There isn't
+really a mainstream "BloodHound for NTFS permissions" -- BloodHound itself maps AD
 relationships, not filesystem ACLs, and needs a Neo4j server; the tools that
 do map filesystem access, Sysinternals AccessChk/AccessEnum, the
 NTFSSecurity module, commercial products like Varonis/Netwrix, are either
@@ -451,10 +457,15 @@ for the complete list. Auto-expansion at "Full" depth also stops after 1,500
 folders on a very large tree, to stay responsive; anything still collapsed
 past that point can still be expanded manually.
 
-For very large audits (hundreds of thousands of rows), the whole dataset is
-embedded as JSON in the one HTML file, which can get large (tens of MB) --
-still workable, but if it feels sluggish, generate a map per share/subtree
-rather than one for the whole server, or keep the depth setting low.
+For very large audits (hundreds of thousands or millions of rows), access
+entries are partitioned into one file per top-level share
+(`AccessMap_data\share_N.js`) and loaded lazily -- only the share(s) you
+actually open get fetched, so the dashboard, sidebar search, and quick
+filters render instantly regardless of overall size, and opening a specific
+folder or identity only costs whatever its own share weighs. If a single
+share is itself huge, opening something inside *that* share can still feel
+slow (its one file is still large); keeping the depth setting low helps
+there, same as before.
 
 **`Build-AccessMapHtml.ps1` reads `IdentityPermissions.csv`/`ADIdentityDetails.csv`
 as a true stream** (one row at a time via a quote-aware CSV parser), not by
@@ -468,20 +479,22 @@ anyway (confirmed directly: roughly 3 minutes for 800,000 rows in testing) --
 worth knowing if you're scanning something modest in size, where the old
 behavior would have been faster.
 
-**This does not remove the tool's fundamental size ceiling.** Streaming the
-*input* more efficiently doesn't change that the *output* is still one
-self-contained HTML file with the entire dataset embedded as JSON in it --
-the accumulated edges/identities/folders, and the final JSON string, still
-need to fit in memory as one piece, and a browser still needs to load and
-parse that whole file. A warning appears automatically once
-`IdentityPermissions.csv` exceeds roughly 300 MB, since that's the point
-where running into trouble becomes a real possibility. **The actual fix for
-a source file at that scale isn't a bigger machine -- it's scanning and
-mapping one share/subtree at a time** (re-run `Invoke-NTFSPermissionAudit.ps1`
-with `-Path` pointed at each major share separately, and build a map per
-share) rather than one combined report for an entire file server. This is
-already fully supported today, nothing new to learn -- it's simply the
-scalable way to use a single-file-HTML tool like this one.
+**The *browser* no longer has a fundamental size ceiling the way it used to**
+-- the old version embedded the entire dataset as one inline JSON blob, so
+opening the report cost a multi-hundred-MB parse before anything rendered at
+all, regardless of what you actually wanted to look at. Now it only ever
+loads what you ask for. **This build *script* still has one, though**: it
+accumulates every identity/folder/access-entry in memory while it streams
+the CSV (each row's .NET object overhead is larger than the row's own text),
+and only partitions/writes them out to `AccessMap_data\` at the end. A
+warning appears automatically once `IdentityPermissions.csv` exceeds roughly
+300 MB, since that's the point where running into trouble while *building*
+the report becomes a real possibility. **The fix for a source file at that
+scale isn't a bigger machine -- it's scanning and mapping one share/subtree
+at a time** (re-run `Invoke-NTFSPermissionAudit.ps1` with `-Path` pointed at
+each major share separately, and build a map per share) rather than one
+combined report for an entire file server. This is already fully supported
+today, nothing new to learn.
 
 Like the CSVs, `Errors.log` is picked up automatically from `-InputFolder`
 if present (matching the same run by timestamp) -- nothing extra to pass.
@@ -503,11 +516,12 @@ those errors, not before.
 **Keep `Invoke-NTFSPermissionAudit.ps1`, `Build-AccessMapHtml.ps1`, and
 `AccessMapTemplate.html` as a matched set.** `Build-AccessMapHtml.ps1`
 needs `AccessMapTemplate.html` sitting in the same folder to run at all --
-it reads that file, fills in the data, and writes the result as
-`AccessMap.html` -- so update all three files together rather than
-swapping just one, and use the generated report's footer (`toolkit
-vX.X.X`) as a quick sanity check that the version you're looking at is
-the one you think it is.
+it reads that file and copies it byte-for-byte as `AccessMap.html` in the
+output folder (its data is written separately, alongside it, as
+`AccessMap_data\manifest.js` and `AccessMap_data\share_N.js` -- see Step 3
+above) -- so update all three files together rather than swapping just one,
+and use the generated report's footer (`toolkit vX.X.X`) as a quick sanity
+check that the version you're looking at is the one you think it is.
 
 ## Notes and caveats
 
