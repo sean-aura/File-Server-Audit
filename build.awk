@@ -91,7 +91,14 @@ function get_share_key(path,    n, parts, i, cnt, result) {
         }
     }
     if (cnt < 2) return path
-    return "\\\\" result
+    # Only prepend the UNC "\\" when the path itself actually had one -- for
+    # a locally-rooted audit (a plain C:\... path, no UNC prefix at all),
+    # unconditionally prepending it fabricated a share key ("\\D:\Shares")
+    # that could never match any of that path's own real ancestors, which
+    # broke AccessMapTemplate.html's client-side tree/breadcrumb logic for
+    # any dataset scanned from a local path rather than a UNC one.
+    if (substr(path, 1, 2) == "\\\\") return "\\\\" result
+    return result
 }
 
 # Quote-aware CSV line splitter. Fast path (no quote char at all -> plain

@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.6.2
+    Version: 0.6.3
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,7 +132,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.6.2'
+$ScriptVersion = '0.6.3'
 
 $ErrorActionPreference = 'Stop'
 
@@ -514,7 +514,14 @@ function Get-ShareKeyFromPath {
     param([Parameter(Mandatory)][string]$Path)
     $segs = $Path.Split('\') | Where-Object { $_ -ne '' }
     if ($segs.Count -lt 2) { return $Path }   # shouldn't normally happen; falls back to the whole path as its own "share"
-    return '\\' + ($segs[0..1] -join '\')
+    # Only prepend the UNC "\\" when the path itself actually had one -- for
+    # a locally-rooted audit (a plain C:\... path, no UNC prefix at all),
+    # unconditionally prepending it fabricated a share key ("\\D:\Shares")
+    # that could never match any of that path's own real ancestors, which
+    # broke AccessMapTemplate.html's client-side tree/breadcrumb logic for
+    # any dataset scanned from a local path rather than a UNC one.
+    $prefix = if ($Path.StartsWith('\\')) { '\\' } else { '' }
+    return $prefix + ($segs[0..1] -join '\')
 }
 
 # Broad, default principals whose Full Control / Modify grants get flagged in

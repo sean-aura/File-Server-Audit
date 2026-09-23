@@ -2,6 +2,58 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.3] - Fixed empty folder list and dead breadcrumb links: non-UNC path support
+
+### Fixed
+- **Root cause: every path-hierarchy computation assumed a UNC-style
+  (`\\server\share\...`) path.** `AccessMapTemplate.html`'s `buildFolderTree()`
+  /`ensureNode()` (added in 0.6.1 for gap-bridging) and `folderInfoCard()`'s
+  breadcrumb (added in 0.6.2) both reconstructed an ancestor's path by
+  splitting into segments and re-joining with a hardcoded `\\` prefix. That
+  only produces a real match for a UNC path -- for a locally-rooted audit (a
+  plain `C:\...` path, no UNC prefix at all) it fabricated an ancestor path
+  (`\\D:\Shares`, say) that could never match the real folder actually
+  stored at that level (`D:\Shares`, no fake leading backslash). The result:
+  every real folder appeared to have only virtual, disconnected ancestors,
+  which (combined with 0.6.2's stricter root-detection) meant the sidebar
+  folder list found zero valid roots and rendered empty, and every
+  breadcrumb ancestor segment came back "not found" and was shown as plain,
+  unclickable text instead of a link.
+- Fixed by deriving a parent path from the path's own last backslash
+  (`path.substring(0, path.lastIndexOf('\\'))`) instead of re-synthesizing
+  one from split segments -- this preserves whatever prefix convention the
+  path already uses, UNC or otherwise, so it can never produce a mismatched
+  ancestor. The walk now also stops at each folder's own precomputed
+  `.share` field rather than a hardcoded "2 segments" rule, and the sidebar
+  list's root-detection (`isTopOfItsOwnBranch`) walks the full ancestor
+  chain looking for any REAL folder rather than requiring a folder to have
+  literally no parent at all -- so it also now handles an audit that was
+  pointed at a subfolder partway down a share (every real folder technically
+  has *some* recorded parent in that case, but that chain, being entirely
+  virtual, should still correctly resolve to a top-level entry).
+- **Bonus fix, same root cause, different function**: `Get-ShareKeyFromPath`
+  (`Build-AccessMapHtml.ps1`) and `get_share_key` (`build.awk`) had the
+  identical unconditional-`\\`-prefix bug -- cosmetic only (all folders
+  under one local root still consistently got the SAME fabricated share
+  key, so lazy-loading kept working), but confusing (`\\D:\Shares` for a
+  plain local path) and worth fixing for the same reason. Now only prepends
+  `\\` when the source path itself actually had one.
+
+### Verified
+- A dataset built with local drive-letter paths (`D:\Shares\Finance\...`,
+  no UNC prefix at all) confirms: the sidebar folder list is no longer
+  empty and nests correctly (3 folders, properly ordered); the breadcrumb's
+  real ancestor segments ("Finance", "Reports") are clickable and correctly
+  navigate there, while segments the scan never recorded as their own
+  folder ("D:", "Shares") are shown as plain text; the folder's own Tree
+  view still nests correctly too. Share keys from both build scripts came
+  back as the correct, non-fabricated `D:\Shares` (previously `\\D:\Shares`).
+- Full pre-existing regression suite -- including the 0.6.1 gap-bridging
+  dataset (virtual nodes still shown as plain, unclickable breadcrumb
+  segments) and the 0.6.2 false-prefix sibling-sort trap (still correctly
+  ordered in both A-Z and Z-A) -- still passes with zero errors on both
+  build paths after these changes.
+
 ## [0.6.2] - AccessMapTemplate.html: hierarchical folder sort, breadcrumb nav
 
 Both fixes below are confined to `AccessMapTemplate.html` -- neither build

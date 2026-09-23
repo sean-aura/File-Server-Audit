@@ -420,21 +420,24 @@ function nodeIsReal(id) { return id >= 0; }
 function nodePath(id) { return id >= 0 ? DATA.folders[id].path : virtualNodes[-id - 1].path; }
 function nodeLabel(id) { return id >= 0 ? lastPathSegment(DATA.folders[id].path) : virtualNodes[-id - 1].segment; }
 
-function ensureNode(path) {
+function ensureNode(path, shareRoot) {
   // Returns the node id for `path`: the real folder if the scan recorded
   // one there, otherwise a virtual node -- creating it, and recursively
   // wiring its own parent the same way, the first time this exact path is
   // asked for. Recursion terminates as soon as it reaches a path already in
   // pathToNodeId (a real folder, or a virtual node created by an earlier
-  // call), since that node's own ancestor chain was already wired then.
+  // call), since that node's own ancestor chain was already wired then, or
+  // once it reaches shareRoot itself (nothing above that is meaningful --
+  // just a bare server or drive letter, not another folder level).
   if (folderPathToIdx.has(path)) return folderPathToIdx.get(path);
-  const segs = path.split('\\').filter(Boolean);
+  const lastSep = path.lastIndexOf('\\');
+  const segment = lastSep >= 0 ? path.substring(lastSep + 1) : path;
   const id = -(virtualNodes.length + 1);
-  virtualNodes.push({ path, segment: segs.length ? segs[segs.length - 1] : path });
+  virtualNodes.push({ path, segment });
   folderPathToIdx.set(path, id);
-  if (segs.length > 2) {
-    const parentPath = '\\\\' + segs.slice(0, -1).join('\\');
-    const parentId = ensureNode(parentPath);
+  if (path !== shareRoot && lastSep > 0) {
+    const parentPath = path.substring(0, lastSep);
+    const parentId = ensureNode(parentPath, shareRoot);
     if (!folderChildren.has(parentId)) folderChildren.set(parentId, []);
     folderChildren.get(parentId).push(id);
     folderParent.set(id, parentId);
@@ -443,18 +446,26 @@ function ensureNode(path) {
 }
 
 function buildFolderTree() {
-  // Parent/child relationships are derived purely from path strings -- a folder
-  // is another folder's direct child if its path is exactly one segment longer
-  // and starts with the parent's path. Any missing intermediate level gets a
-  // virtual node (see ensureNode) rather than breaking the chain, so real
-  // folders still nest under their true ancestor even when the scan itself
-  // has gaps between them.
+  // Parent/child relationships are derived from path strings -- a folder's
+  // parent path is whatever's left after trimming its own last segment off
+  // (via the path's own last backslash), not a path re-synthesized from
+  // split segments with a hardcoded "\\" prefix -- that assumption only
+  // holds for UNC-style (\\server\share\...) paths and silently fabricates
+  // a non-matching ancestor for any other convention (a local C:\... root,
+  // for instance), which then never connects back to the real folder at
+  // that level and can leave every folder looking parentless. Each
+  // folder's own precomputed .share field (whatever convention it itself
+  // uses) marks where the walk stops -- nothing above a share's own root is
+  // meaningful here. Any missing intermediate level gets a virtual node
+  // (see ensureNode) rather than breaking the chain, so real folders still
+  // nest under their true ancestor even when the scan itself has gaps.
   DATA.folders.forEach((f, idx) => folderPathToIdx.set(f.path, idx));
   DATA.folders.forEach((f, idx) => {
-    const segs = f.path.split('\\').filter(Boolean);
-    if (segs.length <= 2) return; // \\server\share -- a share root has no parent in our data
-    const parentPath = '\\\\' + segs.slice(0, -1).join('\\');
-    const parentId = ensureNode(parentPath);
+    if (f.path === f.share) return; // this folder IS its own share's root -- no parent
+    const lastSep = f.path.lastIndexOf('\\');
+    if (lastSep <= 0) return; // defensive: nothing to trim
+    const parentPath = f.path.substring(0, lastSep);
+    const parentId = ensureNode(parentPath, f.share);
     if (!folderChildren.has(parentId)) folderChildren.set(parentId, []);
     folderChildren.get(parentId).push(idx);
     folderParent.set(idx, parentId);
@@ -483,6 +494,25 @@ function computeTopmostRoots(candidateIndices) {
 
 let cachedFolderTreeOrder = null;
 let cachedFolderTreeOrderDir = null;
+
+function isTopOfItsOwnBranch(idx) {
+  // A real folder counts as a top-level entry for the flat sidebar list if
+  // no ancestor above it (walking up through any virtual bridge nodes) is
+  // ALSO a real, scanned folder. Covers both the ordinary case (this
+  // folder's own share root was itself scanned, so it simply has no
+  // parent at all) and the less obvious one: an audit pointed at a
+  // subfolder partway down a share, where EVERY real folder in the data
+  // technically has some recorded parent, but that parent chain -- purely
+  // virtual the whole way -- never actually passes through another folder
+  // the scan itself captured. Plain `folderParent.get(idx) === undefined`
+  // would wrongly find zero roots in that second case.
+  let p = folderParent.get(idx);
+  while (p !== undefined) {
+    if (nodeIsReal(p)) return false;
+    p = folderParent.get(p);
+  }
+  return true;
+}
 
 function getFolderListInTreeOrder() {
   // A flat lexicographic sort of every folder's own full path string doesn't
@@ -514,7 +544,7 @@ function getFolderListInTreeOrder() {
   if (cachedFolderTreeOrder && cachedFolderTreeOrderDir === state.sortDir) return cachedFolderTreeOrder;
 
   const roots = [];
-  DATA.folders.forEach((f, idx) => { if (folderParent.get(idx) === undefined) roots.push(idx); });
+  DATA.folders.forEach((f, idx) => { if (isTopOfItsOwnBranch(idx)) roots.push(idx); });
   roots.sort((a, b) => cmpText(DATA.folders[a].path, DATA.folders[b].path));
 
   const out = [];
@@ -1570,24 +1600,39 @@ function folderInfoCard(f) {
   // sidebar or the tree -- each segment navigates to that exact folder if
   // it's one the scan actually recorded (a virtual, "not scanned" ancestor
   // -- see ensureNode -- has nothing to navigate to, so it's shown plain).
+  //
+  // Walks the ORIGINAL path string's own backslash positions rather than
+  // re-splitting into segments and re-joining with a hardcoded "\\" prefix
+  // -- that assumption only holds for UNC-style (\\server\share\...) paths,
+  // and silently made every ancestor segment unclickable for any other
+  // path convention (a local C:\... root, for instance), since the
+  // reconstructed prefix would never match how the path was actually
+  // stored.
   const crumbWrap = document.createElement('div');
   crumbWrap.className = 'breadcrumb';
-  const segs = f.path.split('\\').filter(Boolean);
-  let acc = '';
-  segs.forEach((seg, i) => {
-    const isLast = i === segs.length - 1;
-    acc = i === 0 ? seg : (acc + '\\' + seg);
+  const path = f.path;
+  const isUnc = path.startsWith('\\\\');
+  const segments = []; // [text, endIndexInPath]
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i === path.length || path[i] === '\\') {
+      if (i > start) segments.push([path.substring(start, i), i]);
+      start = i + 1;
+    }
+  }
 
+  segments.forEach(([seg, endIdx], i) => {
+    const isLast = i === segments.length - 1;
     const span = document.createElement('span');
     span.textContent = seg;
-    if (i === 0) {
+    if (i === 0 && isUnc) {
       // The server name alone (\\server, no share) was never a node in our
       // data to begin with -- nothing to navigate to.
       span.className = 'crumbPlain';
     } else if (isLast) {
       span.className = 'crumbCurrent';
     } else {
-      const nodeId = folderPathToIdx.get('\\\\' + acc);
+      const nodeId = folderPathToIdx.get(path.substring(0, endIdx));
       if (nodeId !== undefined && nodeIsReal(nodeId)) {
         span.className = 'crumbLink';
         span.onclick = () => selectFolder(nodeId, true);
