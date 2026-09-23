@@ -2,6 +2,56 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.2] - AccessMapTemplate.html: hierarchical folder sort, breadcrumb nav
+
+Both fixes below are confined to `AccessMapTemplate.html` -- neither build
+script needed any change, since both just copy this file byte-for-byte.
+
+### Fixed
+- **Sidebar folder list sort didn't respect the actual tree.** A flat
+  lexicographic sort of full path strings can put an unrelated sibling
+  folder in between a parent and its own child -- e.g. `\\test\shared\test2`
+  (a sibling) sorted between `\\test\shared\test` and its own child
+  `\\test\shared\test\a`, because the character right after "test" (`2`,
+  code 50) happens to sort before the character after it in the child's path
+  (`\`, code 92). `getFolderListInTreeOrder()` now walks the actual folder
+  tree depth-first, pre-order (each share in turn, and within it every
+  descendant nested exactly where it belongs), so a folder's whole branch
+  always reads as one contiguous, alphabetized block -- matching how a file
+  explorer's own expanded tree would read if flattened into a list. A-Z
+  keeps the root of each branch on top; Z-A is a true full reversal of that
+  same sequence, so a branch's root ends up at the BOTTOM of its own block
+  (children-then-parent), not just reversed sibling order with the parent
+  still pinned to the top. This reversal rule is specific to this flat
+  list -- the nested Tree view's own child ordering still reverses sibling
+  order only, since a parent node there can never visually sit below its
+  own children in an expandable widget; two different UI shapes, two
+  different reversal rules, both intentional.
+
+### Added
+- **Clickable breadcrumb** above a folder's Tree/Graph tabs, replacing the
+  old plain path heading. Each ancestor segment the scan actually recorded
+  navigates straight to that folder; a segment standing in for a path level
+  the scan never recorded (a virtual "not scanned" node -- see the 0.6.1
+  entry below) renders as plain, unclickable text instead, same as it does
+  in the Tree view itself.
+
+### Verified
+- A dataset built specifically to reproduce the false-prefix sibling trap
+  (`test`, `test\a`, `test\b`, `test2`, `zzz` under one share) confirms the
+  sidebar list now nests correctly in A-Z, and is a true full reversal in
+  Z-A, exactly matching hand-computed expected order for both directions.
+- The existing gapped-path dataset (0.6.1) confirms the breadcrumb marks a
+  virtual ancestor as plain text and a real one as a clickable link that
+  correctly navigates there.
+- The full multi-share Run1 dataset confirms the tree-order generalizes
+  correctly at scale: each share's entire branch (up to 26 folders in one
+  case) stays grouped as one contiguous block rather than interleaving
+  with another share's folders.
+- Full pre-existing regression suite (dashboard, cross-share lazy loading,
+  relationship graph, scan errors, the 0.6.0/0.6.1 fixes) still passes with
+  zero errors after these changes.
+
 ## [0.6.1] - Root-caused the \\?\UNC path prefix bug (tree fracture, bogus share key)
 
 ### Fixed -- `Invoke-NTFSPermissionAudit.ps1` (bumped to 0.5.2)

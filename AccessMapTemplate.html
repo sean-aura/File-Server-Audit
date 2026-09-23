@@ -43,6 +43,12 @@
   #welcome ul { line-height:1.8; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:14px 16px; margin-bottom:16px; }
   .card h2 { margin:0 0 10px; font-size:15px; }
+  .breadcrumb { font-size:15px; font-weight:600; line-height:1.7; word-break:break-word; margin-bottom:6px; }
+  .crumbLink { color:var(--accent); cursor:pointer; }
+  .crumbLink:hover { text-decoration:underline; }
+  .crumbCurrent { color:var(--text); }
+  .crumbPlain { color:var(--muted); font-weight:400; }
+  .crumbSep { color:var(--muted); margin:0 5px; font-weight:400; }
   .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
   .card .field b { color:var(--muted); font-weight:500; }
   .treeWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
@@ -475,6 +481,55 @@ function computeTopmostRoots(candidateIndices) {
   });
 }
 
+let cachedFolderTreeOrder = null;
+let cachedFolderTreeOrderDir = null;
+
+function getFolderListInTreeOrder() {
+  // A flat lexicographic sort of every folder's own full path string doesn't
+  // respect the tree it's actually describing: one folder's own descendants
+  // can sort BEHIND an entirely unrelated sibling folder purely because of
+  // how their names compare character-by-character (e.g. "\\srv\test2"
+  // sorts between "\\srv\test" and "\\srv\test\a", even though the latter is
+  // test's own child, not test2's). This instead walks the real tree
+  // depth-first, pre-order -- each share (root) in turn, and within it every
+  // descendant nested exactly where it belongs -- so a folder's whole branch
+  // always reads as one contiguous, alphabetized block, matching how a file
+  // explorer's expanded tree would read if flattened into a list. Virtual
+  // "not scanned" bridge nodes (see ensureNode) are walked through so their
+  // real descendants still land in the right place, but aren't themselves
+  // emitted (nothing to select there).
+  //
+  // Cached and only rebuilt when the sort direction actually changes --
+  // search keystrokes and filter toggles re-render the list far more often
+  // than that, and re-filtering this cached order is cheap regardless.
+  // Compute the ascending (A-Z) linearization once, then reverse the WHOLE
+  // sequence for Z-A -- not just each level's own sibling order. "Root on
+  // top in A-Z, root on bottom in Z-A" means the parent's own POSITION
+  // relative to its children flips too (children-then-parent in Z-A), not
+  // just which sibling comes first at any given level. This only makes
+  // sense for this flat list; the nested Tree view's own children ordering
+  // (see renderFolderNode) reverses sibling order only, since a parent node
+  // there can never visually sit below its own children in an expandable
+  // widget -- two different UI shapes, two different reversal rules.
+  if (cachedFolderTreeOrder && cachedFolderTreeOrderDir === state.sortDir) return cachedFolderTreeOrder;
+
+  const roots = [];
+  DATA.folders.forEach((f, idx) => { if (folderParent.get(idx) === undefined) roots.push(idx); });
+  roots.sort((a, b) => cmpText(DATA.folders[a].path, DATA.folders[b].path));
+
+  const out = [];
+  function visit(nodeId) {
+    if (nodeIsReal(nodeId)) out.push(nodeId);
+    (folderChildren.get(nodeId) || []).forEach(visit); // already pre-sorted ascending by buildFolderTree
+  }
+  roots.forEach(visit);
+
+  const finalOrder = state.sortDir === -1 ? out.slice().reverse() : out;
+  cachedFolderTreeOrder = finalOrder;
+  cachedFolderTreeOrderDir = state.sortDir;
+  return finalOrder;
+}
+
 function precompute() {
   buildFolderTree();
 
@@ -577,12 +632,14 @@ function renderList() {
       panel.appendChild(more);
     }
   } else {
-    let items = DATA.folders.map((f, idx) => ({ f, idx }));
+    let items = getFolderListInTreeOrder().map(idx => ({ f: DATA.folders[idx], idx }));
     if (q) items = items.filter(x => x.f.path.toLowerCase().includes(q));
     // filterBroken: 0=off, 1=show only broken-inheritance folders, 2=hide them
     if (state.filterBroken === 1) items = items.filter(x => x.f.broken);
     else if (state.filterBroken === 2) items = items.filter(x => !x.f.broken);
-    items.sort((a, b) => state.sortDir * cmpText(a.f.path, b.f.path));
+    // NOTE: no separate sort here -- getFolderListInTreeOrder() already
+    // ordered everything (see there for why a flat string sort isn't used),
+    // and .filter() preserves that relative order.
     const total = items.length;
     items = items.slice(0, LIMIT);
     items.forEach(({ f, idx }) => {
@@ -1507,7 +1564,53 @@ function renderIdentity(idx) {
 function folderInfoCard(f) {
   const div = document.createElement('div');
   div.className = 'card';
-  div.innerHTML = `<h2>${esc(f.path)} ${f.broken ? '<span class="badge broken">Inheritance broken here</span>' : ''}</h2>`;
+
+  // A clickable breadcrumb instead of a flat path string, so a deeply nested
+  // folder can jump straight back to any ancestor without going through the
+  // sidebar or the tree -- each segment navigates to that exact folder if
+  // it's one the scan actually recorded (a virtual, "not scanned" ancestor
+  // -- see ensureNode -- has nothing to navigate to, so it's shown plain).
+  const crumbWrap = document.createElement('div');
+  crumbWrap.className = 'breadcrumb';
+  const segs = f.path.split('\\').filter(Boolean);
+  let acc = '';
+  segs.forEach((seg, i) => {
+    const isLast = i === segs.length - 1;
+    acc = i === 0 ? seg : (acc + '\\' + seg);
+
+    const span = document.createElement('span');
+    span.textContent = seg;
+    if (i === 0) {
+      // The server name alone (\\server, no share) was never a node in our
+      // data to begin with -- nothing to navigate to.
+      span.className = 'crumbPlain';
+    } else if (isLast) {
+      span.className = 'crumbCurrent';
+    } else {
+      const nodeId = folderPathToIdx.get('\\\\' + acc);
+      if (nodeId !== undefined && nodeIsReal(nodeId)) {
+        span.className = 'crumbLink';
+        span.onclick = () => selectFolder(nodeId, true);
+      } else {
+        span.className = 'crumbPlain';
+      }
+    }
+    crumbWrap.appendChild(span);
+    if (!isLast) {
+      const sep = document.createElement('span');
+      sep.className = 'crumbSep';
+      sep.textContent = '\u203a';
+      crumbWrap.appendChild(sep);
+    }
+  });
+  div.appendChild(crumbWrap);
+
+  if (f.broken) {
+    const badge = document.createElement('span');
+    badge.className = 'badge broken';
+    badge.textContent = 'Inheritance broken here';
+    div.appendChild(badge);
+  }
   return div;
 }
 

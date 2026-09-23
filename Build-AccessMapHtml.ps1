@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.6.1
+    Version: 0.6.2
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,7 +132,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.6.1'
+$ScriptVersion = '0.6.2'
 
 $ErrorActionPreference = 'Stop'
 
