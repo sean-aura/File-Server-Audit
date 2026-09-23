@@ -2,6 +2,59 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.1] - Root-caused the \\?\UNC path prefix bug (tree fracture, bogus share key)
+
+### Fixed -- `Invoke-NTFSPermissionAudit.ps1` (bumped to 0.5.2)
+- **The real root cause of a flat-looking folder tree and stray `\\?\UNC\`
+  prefixes in scanned paths.** `Get-LongPathSafe`'s own long-path prefix
+  (`\\?\` / `\\?\UNC\`, applied so classic .NET IO APIs can handle paths
+  near `MAX_PATH`) was supposed to be stripped back off before a path was
+  stored or reported, but the strip was gated on whether the *parent*
+  folder's own path was prefixed (`if ($currentPath.StartsWith('\\?\'))`).
+  .NET can independently decide to hand back a prefixed *child* path based
+  on the child's own resulting length, regardless of whether its parent
+  needed one -- so a short, unprefixed parent with a long enough descendant
+  several levels down would leak `\\?\UNC\...` into that one descendant's
+  path while every folder around it stayed clean. Two folders that are
+  actually the same tree ended up looking like two different addressing
+  schemes: string-based parent/child matching (both in this project's own
+  `AccessMapTemplate.html` and in any other tool that consumes these CSVs)
+  breaks exactly at the depth where the prefix appears, and share-root
+  detection collapses onto a bogus `\\?\UNC` "share" instead of the real one.
+  Fixed by always attempting the strip (`-replace` is a harmless no-op when
+  the prefix isn't present) instead of gating it on the parent's own state,
+  in both the sequential and parallel code paths. Verified: the regex logic
+  itself passes 4 hand-checked prefix/no-prefix cases, the script still
+  parses cleanly, and a real directory walk on a short/unprefixed path still
+  returns correct, unchanged output (no regression for the common case).
+
+### Fixed -- `Build-AccessMapHtml.ps1` / `Build-AccessMapHtml.sh`+`build.awk`
+  (both bumped to 0.6.1)
+- **Defensive path normalization** for CSVs captured before the fix above
+  (can't be re-scanned just to pick it up): both build scripts now strip a
+  leading `\\?\UNC\` or `\\?\` from every row's `Path` at ingestion time,
+  before anything else (share-key derivation, folder indexing) touches it.
+  Applied identically in PowerShell and awk; verified byte-identical
+  normalization output for the same inputs under mawk and gawk.
+- **Case-insensitive, and now explicitly toggleable, sort order.** Sidebar
+  folder/identity lists and the folder tree's child ordering previously
+  relied on plain `localeCompare()`, whose default collation isn't
+  guaranteed case-insensitive across environments and could interleave
+  mixed-case names in a way that looked unsorted even with a comparator
+  applied. Replaced with an explicit lowercase comparison used consistently
+  everywhere folders/identities are listed, and added an **A-Z / Z-A toggle
+  button** in the sidebar (next to the search box) that flips sort direction
+  across the sidebar list, the tree view, and an identity's multi-root
+  folder view together.
+- Verified end-to-end with a dataset built to reproduce the exact reported
+  scenario (shallow, unprefixed home-directory-style folders alongside a
+  deep descendant captured with the `\\?\UNC\` prefix, several unscanned
+  intermediate levels in between): the tree now renders as one correctly-
+  nested branch instead of fracturing at the prefixed folder, the share
+  stays unified (not split into a bogus `\\?\UNC` bucket), and both the
+  sidebar list and the tree correctly re-sort when the new toggle is
+  clicked -- checked against both the PowerShell and bash/awk build paths.
+
 ## [0.6.0] - AccessMapTemplate.html: ACL duplication, flat tree, sidebar UX
 
 All fixes below are confined to `AccessMapTemplate.html` -- the CSV input

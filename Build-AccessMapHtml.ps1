@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.6.0
+    Version: 0.6.1
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,7 +132,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.6.0'
+$ScriptVersion = '0.6.1'
 
 $ErrorActionPreference = 'Stop'
 
@@ -482,6 +482,29 @@ function ConvertTo-Bool {
     return ($Text -eq 'True' -or $Text -eq 'true' -or $Text -eq '1')
 }
 
+# Some rows can carry a Windows extended-length path prefix (\\?\UNC\ for a
+# network path, \\?\ for a local drive path) instead of the normal form --
+# .NET's own long-path handling can independently decide to hand back a
+# prefixed child path based on the CHILD's own resulting length, even when
+# its parent's path was short enough not to need one (a real bug in
+# Invoke-NTFSPermissionAudit.ps1's own un-prefixing logic, fixed there too,
+# but existing CSVs captured before that fix still have it baked in and
+# can't be re-scanned just to pick up the fix). Left alone, this breaks
+# EVERYTHING that depends on paths being in one consistent form: two spans
+# of the very same folder tree end up looking like different addressing
+# schemes, so a deep folder's computed parent path no longer string-matches
+# its own ancestor (fracturing the tree exactly at the depth where the
+# prefix kicks in) and its share key comes out as "\\?\UNC" for every prefixed
+# folder regardless of which real share it's actually in (collapsing what
+# should be several independently-loadable shares into one). Normalizing
+# every path to the same plain form, once, here, fixes both at the root.
+function Get-NormalizedPath {
+    param([string]$Path)
+    if ($Path.StartsWith('\\?\UNC\')) { return '\\' + $Path.Substring(8) }
+    if ($Path.StartsWith('\\?\')) { return $Path.Substring(4) }
+    return $Path
+}
+
 # A folder's "share" is its first two path segments (\\server\share) -- the
 # same convention AccessMapTemplate.html's own buildFolderTree() uses to find
 # share roots. This is what access entries get partitioned by: everything
@@ -607,7 +630,7 @@ foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
     if ($row.ObjectType -eq 'File') { $fileRowsExcluded++; continue }
 
     $identityIdx = Get-OrAdd-Identity -Sid $row.IdentitySid -Name $row.IdentityName -Type $row.IdentityType
-    $folderIdx   = Get-OrAdd-Folder -Path $row.Path
+    $folderIdx   = Get-OrAdd-Folder -Path (Get-NormalizedPath $row.Path)
     $shareKey    = $folderIndex[$folderIdx].share
 
     $inheritanceBroken = ConvertTo-Bool $row.InheritanceBrokenHere

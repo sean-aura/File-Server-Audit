@@ -253,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.5.1
+    Version: 0.5.2
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -319,7 +319,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.5.1'
+$ScriptVersion = '0.5.2'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -1318,9 +1318,13 @@ function Invoke-TreeWalk {
             try {
                 foreach ($filePath in [System.IO.Directory]::EnumerateFiles($safePath)) {
                     # Undo the \\?\ prefix for display/reporting purposes.
-                    $displayPath = if ($currentPath.StartsWith('\\?\')) {
-                        $filePath -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
-                    } else { $filePath }
+                    # Always attempt the strip -- it's a harmless no-op if $filePath doesn't
+                    # actually have the prefix. Gating this on whether $currentPath (the PARENT)
+                    # was itself prefixed used to be the bug here: .NET can independently decide
+                    # to return an extended-length-prefixed child path based on the CHILD's own
+                    # resulting length, regardless of whether the parent's path needed one, so a
+                    # short parent with a long enough child silently leaked \\?\ into the output.
+                    $displayPath = $filePath -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
                     Process-Object -ItemPath $displayPath -IsDirectory $false -RootPath $RootPath
                 }
             }
@@ -1340,9 +1344,10 @@ function Invoke-TreeWalk {
         $safePath = Get-LongPathSafe -InputPath $currentPath
         try {
             foreach ($subDir in [System.IO.Directory]::EnumerateDirectories($safePath)) {
-                $displaySub = if ($currentPath.StartsWith('\\?\')) {
-                    $subDir -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
-                } else { $subDir }
+                # Always attempt the strip -- see the comment on the file-enumeration copy of
+                # this logic just above for why this can't be gated on $currentPath's own prefix
+                # state (a short parent can still produce a long, .NET-prefixed child path).
+                $displaySub = $subDir -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
                 if ($BreadthFirst) { $frontier.Enqueue(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
                 else { $frontier.Push(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
             }
@@ -1412,9 +1417,10 @@ function Invoke-ParallelTreeWalk {
                 $safePath = Get-LongPathSafe -InputPath $currentPath
                 try {
                     foreach ($filePath in [System.IO.Directory]::EnumerateFiles($safePath)) {
-                        $displayPath = if ($currentPath.StartsWith('\\?\')) {
-                            $filePath -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
-                        } else { $filePath }
+                        # Always attempt the strip -- see the comment on the sibling copy of this
+                        # logic in the sequential code path above for why this can't be gated on
+                        # $currentPath's own prefix state.
+                        $displayPath = $filePath -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
                         Write-Output ([PSCustomObject]@{ Path = $displayPath; IsDirectory = $false; Depth = $currentDepth })
                     }
                 }
@@ -1434,9 +1440,10 @@ function Invoke-ParallelTreeWalk {
             $safePath = Get-LongPathSafe -InputPath $currentPath
             try {
                 foreach ($subDir in [System.IO.Directory]::EnumerateDirectories($safePath)) {
-                    $displaySub = if ($currentPath.StartsWith('\\?\')) {
-                        $subDir -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
-                    } else { $subDir }
+                    # Always attempt the strip -- see the comment on the sequential code path's
+                    # copy of this logic above for why this can't be gated on $currentPath's own
+                    # prefix state.
+                    $displaySub = $subDir -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
                     if ($BreadthFirst) { $frontier.Enqueue(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
                     else { $frontier.Push(@{ Path = $displaySub; Depth = $currentDepth + 1 }) }
                 }

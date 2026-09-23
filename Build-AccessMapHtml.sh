@@ -40,7 +40,7 @@
 #     only means a byte-diff between a PowerShell-built and a bash-built
 #     report from the same CSVs won't be empty, even though both are correct.
 
-SCRIPT_VERSION="0.6.0"
+SCRIPT_VERSION="0.6.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 print_usage() {

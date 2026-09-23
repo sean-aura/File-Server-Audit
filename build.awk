@@ -54,6 +54,27 @@ function json_str_list(s,    n, a, i, out) {
     return out
 }
 
+# Some rows can carry a Windows extended-length path prefix (\\?\UNC\ for a
+# network path, \\?\ for a local drive path) instead of the normal form --
+# .NET's own long-path handling can independently decide to hand back a
+# prefixed child path based on the CHILD's own resulting length, even when
+# its parent's path was short enough not to need one (a real bug in
+# Invoke-NTFSPermissionAudit.ps1's own un-prefixing logic, fixed there too,
+# but existing CSVs captured before that fix still have it baked in and
+# can't be re-scanned just to pick up the fix). Left alone, this breaks
+# everything that depends on paths being in one consistent form: two spans
+# of the very same folder tree end up looking like different addressing
+# schemes, so a deep folder's computed parent path no longer string-matches
+# its own ancestor (fracturing the tree exactly at the depth where the
+# prefix kicks in) and its share key comes out as "\\?\UNC" for every prefixed
+# folder regardless of which real share it's actually in. Normalizing every
+# path to the same plain form, once, here, fixes both at the root.
+function normalize_path(p) {
+    if (substr(p, 1, 8) == "\\\\?\\UNC\\") return "\\\\" substr(p, 9)
+    if (substr(p, 1, 4) == "\\\\?\\") return substr(p, 5)
+    return p
+}
+
 # A folder's share is its first two non-empty \-separated path segments
 # (\\server\share) -- same convention AccessMapTemplate.html's own
 # buildFolderTree() uses to find share roots, and what Build-AccessMapHtml.ps1
@@ -291,7 +312,7 @@ BEGIN {
     identitySid  = f[colidx["IdentitySid"]]
     identityType = f[colidx["IdentityType"]]
     grantedVia   = f[colidx["GrantedViaGroup"]]
-    path         = f[colidx["Path"]]
+    path         = normalize_path(f[colidx["Path"]])
     accessControlType  = f[colidx["AccessControlType"]]
     rightsSummary      = f[colidx["RightsSummary"]]
     isInheritedAce     = f[colidx["IsInheritedAce"]]

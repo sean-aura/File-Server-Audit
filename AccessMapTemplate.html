@@ -25,7 +25,9 @@
   #sidebar .tabs { display:flex; border-bottom:1px solid var(--border); }
   #sidebar .tabs button { flex:1; border:none; border-radius:0; background:transparent; padding:10px; }
   #sidebar .tabs button.active { background:var(--panel2); border-bottom:2px solid var(--accent); }
-  #searchBox { margin:10px; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
+  .searchRow { display:flex; gap:6px; margin:10px; align-items:stretch; }
+  #searchBox { flex:1; min-width:0; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
+  #sortDirBtn { flex-shrink:0; font-size:12px; padding:6px 10px; }
   #listPanel { flex:1; overflow-y:auto; padding:0 6px 10px; }
   .listItem { padding:8px 10px; border-radius:4px; cursor:pointer; font-size:13px; margin-bottom:2px; }
   .listItem:hover { background:var(--panel2); }
@@ -200,7 +202,10 @@
         <button id="tabIdentities" class="active">Identities</button>
         <button id="tabFolders">Folders</button>
       </div>
-      <input id="searchBox" type="text" placeholder="Search...">
+      <div class="searchRow">
+        <input id="searchBox" type="text" placeholder="Search...">
+        <button id="sortDirBtn" title="Sort direction">A&ndash;Z</button>
+      </div>
       <div id="listPanel"></div>
     </div>
     <div id="splitter" title="Drag to resize"></div>
@@ -364,8 +369,22 @@ let state = {
                         // relationships only. Separate from the Tree's `depth` since they mean
                         // different things (relationship hops here vs. subfolder nesting there).
   filterBroken: 0,     // sidebar quick filter, tri-state: 0=off, 1=show only, 2=hide
-  filterDormant: 0      // same, for the disabled/dormant/locked identities filter
+  filterDormant: 0,    // same, for the disabled/dormant/locked identities filter
+  sortDir: 1           // sidebar list sort direction: 1 = A-Z, -1 = Z-A
 };
+
+// Case-insensitive comparator for anything shown alphabetically (sidebar
+// lists, tree children) -- plain localeCompare()'s default collation isn't
+// guaranteed case-insensitive across environments/locales, which could
+// otherwise interleave "Arthur"/"bill"/"Diane" in a way that LOOKS unsorted
+// even though a comparator was technically applied.
+function cmpText(a, b) {
+  a = (a || '').toLowerCase();
+  b = (b || '').toLowerCase();
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 const RING_SPACING = 130;
 const HUB_DEGREE_THRESHOLD = 15;
@@ -434,7 +453,7 @@ function buildFolderTree() {
     folderChildren.get(parentId).push(idx);
     folderParent.set(idx, parentId);
   });
-  folderChildren.forEach(list => list.sort((a, b) => nodePath(a).localeCompare(nodePath(b))));
+  folderChildren.forEach(list => list.sort((a, b) => cmpText(nodePath(a), nodePath(b))));
 }
 
 function computeTopmostRoots(candidateIndices) {
@@ -532,7 +551,7 @@ function renderList() {
     // filterDormant: 0=off, 1=show only disabled/dormant/locked, 2=hide them
     if (state.filterDormant === 1) items = items.filter(x => x.idn.flagDisabled || x.idn.flagDormant || x.idn.flagLocked);
     else if (state.filterDormant === 2) items = items.filter(x => !(x.idn.flagDisabled || x.idn.flagDormant || x.idn.flagLocked));
-    items.sort((a, b) => (a.idn.name || '').localeCompare(b.idn.name || ''));
+    items.sort((a, b) => state.sortDir * cmpText(a.idn.name, b.idn.name));
     const total = items.length;
     items = items.slice(0, LIMIT);
     items.forEach(({ idn, idx }) => {
@@ -563,7 +582,7 @@ function renderList() {
     // filterBroken: 0=off, 1=show only broken-inheritance folders, 2=hide them
     if (state.filterBroken === 1) items = items.filter(x => x.f.broken);
     else if (state.filterBroken === 2) items = items.filter(x => !x.f.broken);
-    items.sort((a, b) => a.f.path.localeCompare(b.f.path));
+    items.sort((a, b) => state.sortDir * cmpText(a.f.path, b.f.path));
     const total = items.length;
     items = items.slice(0, LIMIT);
     items.forEach(({ f, idx }) => {
@@ -749,7 +768,11 @@ function renderFolderNode(nodeId, level, maxAutoExpandDepth, onSelectFolder, sel
   function buildChildren() {
     if (built) return;
     built = true;
-    const shown = allChildren.slice(0, TREE_CHILD_CAP);
+    // allChildren is stored sorted ascending (see buildFolderTree); reversing
+    // it here reflects the sidebar's own A-Z/Z-A toggle in the tree too,
+    // without needing to re-sort the underlying structure on every toggle.
+    const ordered = state.sortDir === -1 ? allChildren.slice().reverse() : allChildren;
+    const shown = ordered.slice(0, TREE_CHILD_CAP);
     shown.forEach(childId => {
       childHost.appendChild(renderFolderNode(childId, level + 1, maxAutoExpandDepth, onSelectFolder, selectedFolderIdx, expandBudget));
     });
@@ -1453,7 +1476,7 @@ function renderIdentity(idx) {
     // one per branch, so a subfolder never shows up as a duplicate second root.
     const allAccessedFolders = Array.from(new Set(allRows.map(r => r.e[0])));
     const rootFolderIndices = computeTopmostRoots(allAccessedFolders)
-      .sort((a, b) => DATA.folders[a].path.localeCompare(DATA.folders[b].path));
+      .sort((a, b) => state.sortDir * cmpText(DATA.folders[a].path, DATA.folders[b].path));
 
     content.appendChild(renderFolderTreeView(
       rootFolderIndices,
@@ -2231,6 +2254,15 @@ function init() {
   document.getElementById('tabIdentities').onclick = () => setTab('identities');
   document.getElementById('tabFolders').onclick = () => setTab('folders');
   document.getElementById('searchBox').oninput = (e) => { state.search = e.target.value; renderList(); };
+  document.getElementById('sortDirBtn').onclick = () => {
+    state.sortDir *= -1;
+    document.getElementById('sortDirBtn').innerHTML = state.sortDir === 1 ? 'A&ndash;Z' : 'Z&ndash;A';
+    renderList();
+    if (state.selected) {
+      if (state.selected.kind === 'folder') renderFolder(state.selected.idx);
+      else renderIdentity(state.selected.idx);
+    }
+  };
   document.getElementById('backBtn').onclick = goBack;
   document.getElementById('summaryBtn').onclick = renderSummaryView;
 
