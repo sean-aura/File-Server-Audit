@@ -2,6 +2,76 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - AccessMapTemplate.html: ACL duplication, flat tree, sidebar UX
+
+All fixes below are confined to `AccessMapTemplate.html` -- the CSV input
+format and both build scripts are untouched, since `Build-AccessMapHtml.ps1`
+and `Build-AccessMapHtml.sh` both just copy this file byte-for-byte into the
+generated `AccessMap.html` and need no script-side changes for any of this
+to take effect (confirmed: both build paths still emit an identical, fixed
+`AccessMap.html` from the same template).
+
+### Fixed
+- **A folder's ACL list double-counted group members.** A group's own grant
+  and each of its expanded members previously rendered as separate, equally-
+  counted flat rows, inflating the apparent number of identities with
+  access. A direct grant for a Group identity now absorbs its own via-group
+  rows as collapsible children instead, with a summary line splitting
+  "N direct grants" from "M more via group membership". The folder tree's
+  per-node count badge gets the same direct+viaGroup breakdown (e.g. "2+2")
+  instead of one blended number. CSV export of the full flat edge list is
+  unchanged.
+- **The folder tree rendered flat instead of nested** when the scan hadn't
+  recorded every intermediate folder level (an ACL-unchanged folder it
+  skipped, etc.), which broke the parent/child chain and made deeper
+  folders show up as their own disconnected tree roots. `buildFolderTree()`/
+  `ensureNode()` now insert a "virtual" node (unclickable, labeled "not
+  scanned") for any missing path segment needed to structurally connect two
+  real folders, so a real folder several levels deep still nests under its
+  true ancestor regardless of gaps in what the scan actually recorded.
+- **Sidebar folder/identity lists were in raw scan/CSV order.** Both tabs
+  now sort alphabetically by path/name.
+- **The two header quick-filter buttons were one-shot list replacements**
+  with no way to turn them back off short of switching tabs. They're now
+  true 3-way toggles -- off / show-only (green, "ON") / hide (red, "HIDDEN")
+  -- composing with search and tab state instead of replacing the render
+  path. The dashboard's existing clickable stat cards/observations still
+  jump straight to "show only" and stay in sync with the button's state.
+
+### Added
+- A draggable splitter between the sidebar and content panes (pointer-event
+  based, width persisted via `localStorage`, wrapped in try/catch), plus a
+  responsive breakpoint that stacks the panes vertically on narrow
+  viewports.
+
+### Verified
+- jsdom test suite against both a real pwsh-generated and a bash/awk-
+  generated dataset: a deliberately gapped folder path (5 levels, none of
+  the 4 intermediate folders scanned) renders as one 6-node branch with the
+  4 missing levels shown as virtual nodes, not two flat roots; a folder
+  with a group holding Modify plus 2 members granted via that group shows
+  exactly 2 top-level ACL rows (not 4), collapsed by default, expanding to
+  reveal exactly its 2 members; the tri-state filter cycles off -> show-
+  only -> hide -> off correctly via both the header button and the
+  dashboard's stat-card entry point; the sidebar folder list comes back
+  pre-sorted; the splitter's pointer handlers fire without error (full
+  visual drag behavior isn't something jsdom can verify -- no real layout
+  engine -- so treat that part as structurally tested only, not visually
+  confirmed in a real browser). Full pre-existing regression suite
+  (dashboard, cross-share lazy loading, relationship graph, scan errors)
+  still passes with zero errors on both build paths after these changes.
+
+### Considered and declined
+- Moving the direct/via-group count split and the tree gap-bridging out of
+  the browser and into both build scripts as precomputed manifest/share
+  data. Declined for the count split (already cheap, scoped to one folder's
+  already-in-memory edges -- no benefit to precomputing). Declined for
+  gap-bridging too, on balance (a real but narrow win at very large folder
+  counts, outweighed by duplicating trie-building logic across PowerShell
+  and awk and keeping both provably equivalent, for a browser-side render
+  step that would still be needed either way) -- revisit only if a specific
+  large dataset actually shows a noticeable pause here.
+
 ## [0.6.0] - Access map: lazy per-share loading, offline bash/awk variant
 
 ### Added -- offline bash/awk variant of Build-AccessMapHtml
