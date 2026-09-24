@@ -2,6 +2,45 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.4] - Sidebar list truncation now responsive to the resizable pane
+
+### Fixed
+- **Widening the sidebar via the resizable splitter (added in 0.6.2) never
+  showed more of a long folder path.** `truncateLabel(f.path, 60)` was
+  cutting the text itself down to a fixed 60 characters in JavaScript,
+  entirely independent of the sidebar's actual on-screen width -- so making
+  the pane wider had nothing left to reveal. Replaced with the full,
+  untruncated path in the DOM plus CSS `text-overflow:ellipsis` on a
+  dedicated `.path` element, which responds to whatever width is actually
+  available: narrower shows less, wider (via a splitter drag) now shows
+  more, up to the full path if there's room. The full path was already in
+  the row's `title` tooltip either way; this only affects what's visibly
+  displayed inline. Identity list rows were unaffected (they never used
+  this truncation); only the two folder-path list renderers did.
+
+### Investigated, not fixed here -- see the 0.6.4 discussion for the full trail
+- A report of a parent folder (e.g. a share's own top-level subfolder)
+  missing from the folder list/breadcrumb while its own children are
+  present and correct. Traced through `Invoke-NTFSPermissionAudit.ps1`'s
+  full sequential tree walk and `Get-ItemAuditRows`'s complete ACE loop,
+  eliminating in turn: `-SkipInheritedAces` (confirmed off via the run's own
+  `RunConfig_*.json`), access-denied reads (nothing in `Errors.log`),
+  reparse points/DFS links (confirmed a plain folder), a checkpoint/`-Resume`
+  race (the folder legitimately completed, per the checkpoint file, with no
+  crash), the parallel-vs-sequential dispatch (`ThrottleLimit: 1` uses the
+  sequential path only), `MaxDepth`/recursion limits (unlimited, and
+  children were clearly walked), and every other per-ACE filter in the loop
+  (none apply once `-SkipInheritedAces` is off). What remains, given the
+  folder checkpointed successfully with zero rows, is that
+  `$acl.GetAccessRules(...)` itself returned an empty collection for that
+  folder without throwing -- which is either a genuine, if unusual, empty/
+  fully-protected ACL (in which case the right fix is an explicit "no ACL
+  entries" marker row so it stops looking identical to "not scanned"), or a
+  real discrepancy between .NET's view of the ACL and the OS's own (in which
+  case a comparison against `icacls`'s output on the same folder is the
+  needed next step). Blocked on that `icacls` check, which needs to run
+  against the real file server and couldn't be done as part of this session.
+
 ## [0.6.3] - Fixed empty folder list and dead breadcrumb links: non-UNC path support
 
 ### Fixed

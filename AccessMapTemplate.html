@@ -32,6 +32,8 @@
   .listItem { padding:8px 10px; border-radius:4px; cursor:pointer; font-size:13px; margin-bottom:2px; }
   .listItem:hover { background:var(--panel2); }
   .listItem .sub { color:var(--muted); font-size:11px; }
+  .listItemPathRow { display:flex; align-items:center; gap:6px; min-width:0; }
+  .listItemPathRow .path { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
   .badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; margin-left:6px; vertical-align:middle; }
   .badge.disabled { background:var(--bad); color:#fff; }
   .badge.dormant { background:var(--warn); color:#000; }
@@ -676,7 +678,7 @@ function renderList() {
       const div = document.createElement('div');
       div.className = 'listItem';
       const badge = f.broken ? '<span class="badge broken">broken inheritance</span>' : '';
-      div.innerHTML = `<div>${esc(truncateLabel(f.path, 60))}${badge}</div>`;
+      div.innerHTML = `<div class="listItemPathRow"><span class="path">${esc(f.path)}</span>${badge}</div>`;
       div.title = f.path;
       div.onclick = () => selectFolder(idx, true);
       panel.appendChild(div);
@@ -2092,7 +2094,7 @@ function filterToBroadGrantFolders() {
     const f = DATA.folders[idx];
     const div = document.createElement('div');
     div.className = 'listItem';
-    div.innerHTML = `<div>${esc(truncateLabel(f.path, 60))}</div>`;
+    div.innerHTML = `<div class="listItemPathRow"><span class="path">${esc(f.path)}</span></div>`;
     div.title = f.path;
     div.onclick = () => selectFolder(idx, true);
     panel.appendChild(div);
