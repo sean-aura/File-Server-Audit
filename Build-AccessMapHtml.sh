@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 #
+# If you see a syntax error mentioning a stray \r (e.g. "unexpected token
+# '$'{\r''") when running this on WSL/Linux, this file picked up Windows
+# (CRLF) line endings somewhere between download and here -- a common WSL
+# gotcha (Windows-side zip extraction, an editor re-save, git checking it
+# out with core.autocrlf=true, etc.). Fix with either of:
+#   sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk
+#   dos2unix Build-AccessMapHtml.sh build.awk
+# then re-run. This file itself is plain LF, verified at build time -- so
+# if this happens, it happened after it left here.
+#
 # Build-AccessMapHtml.sh -- offline Linux/macOS bash+awk port of
 # Build-AccessMapHtml.ps1. Turns the CSVs from Invoke-NTFSPermissionAudit.ps1
 # into the same AccessMap.html + AccessMap_data/ report the PowerShell script
@@ -40,7 +50,7 @@
 #     only means a byte-diff between a PowerShell-built and a bash-built
 #     report from the same CSVs won't be empty, even though both are correct.
 
-SCRIPT_VERSION="0.6.4"
+SCRIPT_VERSION="0.6.6"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 print_usage() {

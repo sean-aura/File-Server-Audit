@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.6.4. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.6.6. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -177,7 +177,22 @@ precedence if both are supplied.
 
 `-ThrottleLimit N` (default 1, meaning fully sequential -- nothing changes
 unless you opt in) processes N objects' ACL reads and identity resolution
-concurrently instead of one at a time. **Requires PowerShell 7+** -- the
+concurrently instead of one at a time.
+
+> **Fixed in 0.6.6, pending field verification.** A confirmed bug caused
+> `-ThrottleLimit` values above 1 to silently drop group-membership-expansion
+> rows: any group referenced on more than one folder only had its members
+> expanded on the very first folder, across the whole scan, to resolve that
+> group's SID -- every other folder referencing the same group silently lost
+> those rows, with no error. Root-caused and fixed (see CHANGELOG.md for the
+> full mechanism); a real end-to-end test against live AD under real
+> concurrent load hasn't been possible in this project's own dev environment.
+> **If you hit this before and are re-testing now**: re-run the same
+> `-ThrottleLimit 1` vs higher-throttle comparison that would have surfaced
+> it, and confirm the total row counts now match. If they still don't, the
+> comparison script in CHANGELOG.md's 0.6.5 entry still applies.
+
+**Requires PowerShell 7+** -- the
 underlying mechanism (`ForEach-Object -Parallel`) doesn't exist in Windows
 PowerShell 5.1, and passing a value above 1 there is a clear, immediate
 error rather than a silent fallback to sequential. Why this helps: on a
@@ -343,6 +358,19 @@ PowerShell isn't installed:
 ./Build-AccessMapHtml.sh -i /audit/Run1
 # or: -o OUTPUT_FOLDER, -m MAX_EDGES_PER_NODE, -f/--force -- run --help for all of them
 ```
+
+**If you see a syntax error mentioning a stray `\r`** (e.g.
+`unexpected token '$'{\r''`) when running this on WSL -- the script itself
+picked up Windows (CRLF) line endings somewhere between download and here.
+This is a common WSL gotcha, not a bug in the script's own logic (verified
+byte-for-byte as plain LF at build time): Windows-side zip extraction, an
+editor re-save, or a git checkout with `core.autocrlf=true` can all
+introduce this. Fix with either of:
+```bash
+sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk
+dos2unix Build-AccessMapHtml.sh build.awk   # if available
+```
+then re-run.
 
 It needs only `bash` and a standard `awk`. It reads the CSVs itself rather
 than shelling out to the `.ps1` files, so `Invoke-NTFSPermissionAudit.ps1`

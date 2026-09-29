@@ -2,6 +2,135 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.6] - Fixed: parallel-mode group-expansion rows silently dropped
+
+### Fixed -- `Invoke-NTFSPermissionAudit.ps1` (root cause of the 0.6.5 KNOWN ISSUE)
+- **Confirmed root cause of the `-ThrottleLimit`-dependent row-count
+  discrepancy opened in 0.6.5.** `Resolve-IdentityInfo`'s SharedLabelCache
+  fast path (parallel mode only) returns an identity with `Principal = $null`
+  when another worker already resolved that SID's plain Name/Type label --
+  its own comment even said *"if THIS item later needs the full Principal,
+  it falls through to a fresh AD lookup"*, but no such fallback actually
+  existed anywhere in the code. `Get-EffectiveGroupMembers` immediately
+  bailed out (`-not $IdentityInfo.Principal` -> `return @()`) the moment it
+  saw a `$null` Principal, silently returning zero members with no error
+  and no indication anything had been skipped.
+
+  The practical effect: for any group referenced on more than one folder --
+  an extremely common pattern (a department group granted on its own share
+  root, inherited or re-granted many levels down) -- only the very first
+  folder, across the ENTIRE scan, to resolve that group's SID successfully
+  expanded its membership. Every other folder referencing the same group,
+  processed by any worker, after that group's label had already been
+  written to the shared cache, silently lost 100% of that group's member
+  rows for that folder. This explains every observed symptom precisely:
+  only ever happened under `-ThrottleLimit > 1` (SharedLabelCache is only
+  populated/consulted there; sequential mode always does the full lookup
+  and always gets a real Principal); the total varied between otherwise-
+  identical parallel runs (a genuine race for *which* folder wins the "first
+  to resolve this SID" race, not a fixed, deterministic loss); and it scaled
+  with how heavily groups were reused across the tree, not with tree size
+  directly.
+- Fixed by implementing the fallback the comment already described:
+  `Get-EffectiveGroupMembers` now resolves a missing Principal fresh, on its
+  own thread, via the same `$script:PrincipalCtx`/`FindByIdentity` call
+  `Resolve-IdentityInfo` itself already uses, before giving up. This only
+  costs an extra AD round-trip for a group's first encounter *per worker*,
+  not per folder -- as soon as any worker successfully expands a group once,
+  it's written to `SharedGroupCache`, and every subsequent folder (any
+  worker) hits that cache directly, exactly as originally intended, without
+  needing a Principal at all.
+- Verified the control flow directly (a real end-to-end AD-backed test isn't
+  possible in this project's dev environment -- no Windows host, no domain
+  available here): a Group identity with a live `Principal` short-circuits
+  exactly as before; a Group identity with `Principal = $null` now attempts
+  fresh resolution instead of giving up immediately, and degrades cleanly
+  (returns an empty array, no exception) when that resolution itself can't
+  succeed (AD genuinely unreachable at that moment) rather than crashing;
+  non-Group identities are unaffected either way. Script still parses
+  cleanly under PS7's own parser.
+- **Verification still needed from the field**: re-run the same 4-way
+  comparison that surfaced this (`-ThrottleLimit 1` vs `15`, `-BreadthFirst`
+  on/off, same folder) against this fixed version and confirm all four now
+  produce identical total row counts. If they don't, the diagnostic script
+  from the 0.6.5 entry below still applies -- rerun it against the new
+  output and share the "which folders are most affected" breakdown.
+- The README.md `-ThrottleLimit` warning is updated to describe this as
+  fixed-pending-field-verification rather than an open, uncharacterized
+  issue.
+
+## [0.6.5] - WSL CRLF guidance; KNOWN ISSUE opened for a parallel-mode row-count discrepancy
+
+### Fixed
+- **`Build-AccessMapHtml.sh` failing on WSL with `syntax error near unexpected
+  token '$'{\r''`.** Byte-verified the shipped file has zero carriage-return
+  characters -- pure LF -- so this isn't a bug in the script's own content;
+  the CRLF is being introduced somewhere between delivery and the user's WSL
+  environment (a very common gotcha: Windows-side zip extraction, an editor
+  re-save, or a git checkout with `core.autocrlf=true` can each do this).
+  Since a script can't reliably detect and fix its own line-ending
+  corruption (the corruption itself breaks parsing before any of the
+  script's own logic can run), added explicit remediation guidance instead,
+  in both the script's own header comment and README.md:
+  `sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk` (or `dos2unix`).
+
+### KNOWN ISSUE opened, not yet fixed -- `-ThrottleLimit` parallel mode drops rows
+- **A user-reported, reproduced discrepancy**: the same folder, scanned with
+  `-ThrottleLimit 1` vs `-ThrottleLimit 15`, produced meaningfully different
+  total `IdentityPermissions.csv` row counts (34344 vs 33826-33828 in the
+  reported case, roughly 1.5% fewer at the higher throttle value) --
+  **and the count varied between two `-ThrottleLimit 15` runs that only
+  differed in `-BreadthFirst`** (33828 vs 33826). That variability between
+  otherwise-comparable parallel runs is the specific signature of a genuine
+  race condition -- a deterministic logic bug would reproduce the exact same
+  wrong count every time regardless of traversal order.
+- Investigated and ELIMINATED as the cause: `Get-EffectiveGroupMembers`'s
+  and `Resolve-IdentityInfo`'s shared `ConcurrentDictionary` caches both
+  compute their full result before writing it atomically at the end (a
+  cache-miss race there just means redundant wasted computation on two
+  threads, not lost data for either thread's own calling item, since
+  neither reads back a partially-written value). Row-buffer aggregation
+  (`$script:FolderRows`/`$script:IdentityRows`/`$script:PendingCompletedPaths`)
+  happens only in the single-threaded post-`-Parallel` stage, never touched
+  directly by worker runspaces, by design.
+- NOT yet confirmed or ruled out: a subtler issue in how
+  `ForEach-Object -Parallel` streams/serializes output objects back across
+  the runspace boundary under real concurrent load against a real
+  filesystem, which can't be exercised in this project's own dev/test
+  environment (no Windows host, no real network share, no PowerShell 7
+  `-Parallel` runtime available here). Deliberately not guessing a fix
+  blind on a tool whose entire purpose is completeness of a security audit.
+- **Until root-caused, `-ThrottleLimit 1` (fully sequential) should be
+  treated as the trustworthy result** -- see the prominent warning now in
+  README.md's `-ThrottleLimit` documentation. Don't rely on parallel-mode
+  output where completeness matters.
+- Diagnostic script provided to identify exactly which rows differ (run a
+  `-ThrottleLimit 1` and a higher-throttle scan of the same folder
+  back-to-back, then compare -- accounts for exact row multiplicity, not
+  just presence/absence, and breaks the difference down by which folders
+  are most affected, which is the key signal for narrowing down the
+  mechanism: clustered on folders with large `-ExpandGroups`-expanded
+  groups points one direction, evenly spread across unrelated folders
+  points at the `-Parallel` pipeline itself):
+  ```powershell
+  function Get-RowKeyCounts($csvPath) {
+      $counts = @{}
+      Import-Csv $csvPath | ForEach-Object {
+          $k = "$($_.Path)|$($_.IdentitySid)|$($_.AccessControlType)|$($_.RightsSummary)|$($_.IsInheritedAce)|$($_.InheritanceBrokenHere)|$($_.GrantedViaGroup)"
+          if ($counts.ContainsKey($k)) { $counts[$k]++ } else { $counts[$k] = 1 }
+      }
+      return $counts
+  }
+  $tl1  = Get-RowKeyCounts 'C:\Path\To\TL1Run\IdentityPermissions_*.csv'
+  $tl15 = Get-RowKeyCounts 'C:\Path\To\TL15Run\IdentityPermissions_*.csv'
+  $missing = foreach ($k in $tl1.Keys) {
+      $c15 = if ($tl15.ContainsKey($k)) { $tl15[$k] } else { 0 }
+      if ($c15 -lt $tl1[$k]) { [PSCustomObject]@{ Key = $k; InTL1 = $tl1[$k]; InTL15 = $c15 } }
+  }
+  $missing | ForEach-Object { ($_.Key -split '\|')[0] } | Group-Object | Sort-Object Count -Descending | Select-Object -First 20 | Format-Table Name, Count
+  $missing | Select-Object -First 30 | Format-Table -AutoSize
+  ```
+
 ## [0.6.4] - Sidebar list truncation now responsive to the resizable pane
 
 ### Fixed

@@ -253,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.5.2
+    Version: 0.5.3
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -319,7 +319,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.5.2'
+$ScriptVersion = '0.5.3'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -667,7 +667,7 @@ function Get-EffectiveGroupMembers {
         $SharedLabelCache = $null
     )
 
-    if ($IdentityInfo.Type -ne 'Group' -or -not $IdentityInfo.Principal) { return @() }
+    if ($IdentityInfo.Type -ne 'Group') { return @() }
 
     $sidStr = $IdentityInfo.Sid
     if ($GroupCache.ContainsKey($sidStr)) {
@@ -681,10 +681,35 @@ function Get-EffectiveGroupMembers {
         return $result
     }
 
+    # $IdentityInfo.Principal can be $null here even for a real group -- if it
+    # came from a SharedLabelCache hit, Resolve-IdentityInfo's fast path under
+    # parallel processing only ever caches the plain Name/Type label, never a
+    # live Principal (those aren't safe to share across threads), leaving
+    # Principal unset on THIS item's own copy. This used to be treated as
+    # "nothing to expand" and silently returned zero members -- in practice,
+    # for any group used on more than one folder, every occurrence AFTER
+    # whichever worker resolved its label first would silently lose its own
+    # membership expansion, with no error and no indication anything was
+    # skipped. Resolve it fresh here instead, on this thread, using this
+    # thread's own PrincipalContext (already set up per-item, same object
+    # Resolve-IdentityInfo itself uses) -- the whole point of a SharedGroupCache
+    # existing separately below is that this only has to happen once per group,
+    # process-wide, not once per folder that references it.
+    $groupPrincipal = $IdentityInfo.Principal
+    if (-not $groupPrincipal) {
+        if (-not $adAvailable) { return @() }
+        try {
+            $groupPrincipal = [System.DirectoryServices.AccountManagement.Principal]::FindByIdentity(
+                $script:PrincipalCtx, [System.DirectoryServices.AccountManagement.IdentityType]::Sid, $sidStr)
+        }
+        catch { $groupPrincipal = $null }
+        if (-not $groupPrincipal) { return @() }
+    }
+
     Write-Verbose "Expanding group membership (recursive): $($IdentityInfo.Name)"
     $members = New-Object System.Collections.Generic.List[object]
     try {
-        $groupPrincipal = [System.DirectoryServices.AccountManagement.GroupPrincipal]$IdentityInfo.Principal
+        $groupPrincipal = [System.DirectoryServices.AccountManagement.GroupPrincipal]$groupPrincipal
         foreach ($m in $groupPrincipal.GetMembers($true)) {
             $memberSidStr = $m.Sid.Value
 
