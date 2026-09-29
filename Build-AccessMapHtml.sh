@@ -2,9 +2,19 @@
 #
 # If you see a syntax error mentioning a stray \r (e.g. "unexpected token
 # '$'{\r''") when running this on WSL/Linux, this file picked up Windows
-# (CRLF) line endings somewhere between download and here -- a common WSL
-# gotcha (Windows-side zip extraction, an editor re-save, git checking it
-# out with core.autocrlf=true, etc.). Fix with either of:
+# (CRLF) line endings before WSL/bash ever saw it. The most common way this
+# happens: a Windows machine's git config has core.autocrlf=true (Git for
+# Windows' own installer-recommended default), which silently converts LF
+# to CRLF on `git clone`/`git pull` for any file git thinks is text --
+# including this one, if it was committed (correctly, as LF) from macOS/
+# Linux and then cloned onto that Windows machine. This repo ships a
+# .gitattributes forcing *.sh/*.awk to stay LF regardless of the cloning
+# machine's own autocrlf setting -- but that only takes effect for a FRESH
+# checkout after .gitattributes itself is committed; an already-cloned
+# working copy needs re-normalizing (delete and re-clone is the simplest,
+# most reliable fix; `git add --renormalize .` on the machine that owns the
+# repo, then re-clone or hard-reset on the Windows machine, works too).
+# For an immediate, one-off fix on a checkout you already have:
 #   sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk
 #   dos2unix Build-AccessMapHtml.sh build.awk
 # then re-run. This file itself is plain LF, verified at build time -- so
@@ -50,7 +60,7 @@
 #     only means a byte-diff between a PowerShell-built and a bash-built
 #     report from the same CSVs won't be empty, even though both are correct.
 
-SCRIPT_VERSION="0.6.6"
+SCRIPT_VERSION="0.6.7"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 print_usage() {

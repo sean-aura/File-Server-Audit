@@ -2,6 +2,36 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.7] - Root-caused the WSL CRLF corruption to git's own core.autocrlf
+
+### Added
+- **`.gitattributes`**, forcing `*.sh`/`*.awk` to stay LF regardless of the
+  cloning machine's own git config, and `*.ps1` to `eol=crlf` (native
+  Windows convention; PowerShell 7+ parses either line ending correctly
+  regardless).
+
+### Fixed -- precise root cause of the 0.6.4/0.6.5 WSL CRLF guidance
+- **Confirmed the exact mechanism**, from a user's reported workflow: repo
+  extracted/committed on macOS (LF, correct) -> pulled onto a Windows
+  machine via `gh`/git -> built inside WSL. A Windows machine's git config
+  very commonly has `core.autocrlf=true` (Git for Windows' own installer-
+  recommended default), which silently converts LF to CRLF for any file git
+  thinks is text **as part of `git clone`/`git pull` itself** -- before WSL
+  or bash ever sees the file. This is why byte-verifying the shipped file
+  as plain LF (done in 0.6.4/0.6.5) didn't resolve it: the corruption isn't
+  in the file as delivered, it's introduced by git on the checkout step
+  that happens after. Confirmed unaffected on macOS (no autocrlf conversion
+  there) and reproducing specifically after the Windows-side git pull,
+  exactly matching this mechanism.
+- The permanent fix is `.gitattributes` (above), which needs the same
+  `git add --renormalize .` (or delete-and-re-clone) treatment as any
+  `.gitattributes` change to a repo with already-tracked files -- adding it
+  doesn't retroactively fix a working copy that was checked out before it
+  existed. Documented in both the script's own header comment and
+  README.md, alongside the existing immediate one-off fix
+  (`sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk`, or `dos2unix`) for a
+  checkout that's already corrupted and can't be re-cloned right away.
+
 ## [0.6.6] - Fixed: parallel-mode group-expansion rows silently dropped
 
 ### Fixed -- `Invoke-NTFSPermissionAudit.ps1` (root cause of the 0.6.5 KNOWN ISSUE)

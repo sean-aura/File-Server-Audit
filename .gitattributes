@@ -1,0 +1,15 @@
+# Build-AccessMapHtml.sh and build.awk run under WSL/bash -- they must stay
+# LF regardless of the checkout platform or the cloning machine's own git
+# config. Without this, a Windows machine with core.autocrlf=true (Git for
+# Windows' own installer-recommended default) silently converts these to
+# CRLF on `git clone`/`git pull`, before WSL or bash ever sees the file --
+# producing a syntax error like "unexpected token '$'{\r''" that has nothing
+# to do with the script's own content.
+*.sh  text eol=lf
+*.awk text eol=lf
+
+# PowerShell scripts are native Windows; CRLF is conventional there, though
+# PowerShell 7+ parses either line ending correctly regardless.
+*.ps1 text eol=crlf
+
+# Let git decide everything else per its own content-based text detection.

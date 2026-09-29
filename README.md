@@ -5,7 +5,7 @@ file server pair (one active node, one standby), plus a self-contained
 interactive HTML report. Works under both Windows PowerShell 5.1 and
 PowerShell 7+.
 
-Version 0.6.6. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.6.7. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated
@@ -361,11 +361,20 @@ PowerShell isn't installed:
 
 **If you see a syntax error mentioning a stray `\r`** (e.g.
 `unexpected token '$'{\r''`) when running this on WSL -- the script itself
-picked up Windows (CRLF) line endings somewhere between download and here.
-This is a common WSL gotcha, not a bug in the script's own logic (verified
-byte-for-byte as plain LF at build time): Windows-side zip extraction, an
-editor re-save, or a git checkout with `core.autocrlf=true` can all
-introduce this. Fix with either of:
+picked up Windows (CRLF) line endings before WSL/bash ever saw it. Verified
+byte-for-byte as plain LF at build time, so this isn't the script's own
+content; the most common cause is a Windows machine's git config having
+`core.autocrlf=true` (Git for Windows' own installer-recommended default),
+which silently converts LF to CRLF on `git clone`/`git pull` -- so a file
+committed correctly (as LF) from macOS/Linux comes out corrupted the moment
+it's cloned onto a Windows box, before WSL ever runs it. This repo ships a
+`.gitattributes` forcing `*.sh`/`*.awk` to stay LF regardless of the
+cloning machine's own `autocrlf` setting -- but that only takes effect for
+a checkout that happens *after* `.gitattributes` itself is committed; an
+already-cloned working copy needs re-normalizing (deleting and re-cloning
+is the simplest, most reliable fix; `git add --renormalize .` on whichever
+machine owns the repo, then re-clone or hard-reset on the Windows side,
+also works). For an immediate, one-off fix on a checkout you already have:
 ```bash
 sed -i 's/\r$//' Build-AccessMapHtml.sh build.awk
 dos2unix Build-AccessMapHtml.sh build.awk   # if available
