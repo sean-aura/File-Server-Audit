@@ -156,12 +156,15 @@ function get_or_add_identity(sid, name, type,    key, idx) {
     return idx
 }
 
-function get_or_add_folder(path,    idx, shareKey) {
+function get_or_add_folder(path, created, modified, accessed,    idx, shareKey) {
     if (path in folder_lookup) return folder_lookup[path]
     idx = folder_count++
     folder_lookup[path] = idx
     folder_path[idx] = path
     folder_broken[idx] = 0
+    folder_created[idx] = created
+    folder_modified[idx] = modified
+    folder_accessed[idx] = accessed
     shareKey = get_share_key(path)
     folder_share[idx] = shareKey
     if (!(shareKey in share_seen)) {
@@ -306,6 +309,15 @@ BEGIN {
         header_done = 1
         ncols = csv_split(line, hdr)
         for (i = 1; i <= ncols; i++) colidx[hdr[i]] = i
+        # Created/Modified/Accessed are optional columns added in
+        # Invoke-NTFSPermissionAudit.ps1 0.5.5 -- an older CSV (0.5.4 and
+        # earlier) simply won't have them. Checked once here via the `in`
+        # operator (does NOT create the key as a side effect, unlike
+        # accessing colidx["Created"] directly would) -- everywhere else,
+        # f[colidx["Created"]] safely evaluates to "" when the column is
+        # genuinely absent, since column indices are always >= 1 and a
+        # missing colidx entry evaluates to "".
+        has_file_metadata = (("Created" in colidx) && ("Modified" in colidx) && ("Accessed" in colidx)) ? 1 : 0
         data_row_count = 0
         next
     }
@@ -324,9 +336,12 @@ BEGIN {
     rightsSummary      = f[colidx["RightsSummary"]]
     isInheritedAce     = f[colidx["IsInheritedAce"]]
     inheritanceBroken  = f[colidx["InheritanceBrokenHere"]]
+    created            = f[colidx["Created"]]
+    modified           = f[colidx["Modified"]]
+    accessed           = f[colidx["Accessed"]]
 
     identityIdx = get_or_add_identity(identitySid, identityName, identityType)
-    folderIdx   = get_or_add_folder(path)
+    folderIdx   = get_or_add_folder(path, created, modified, accessed)
     shareKey    = folder_share[folderIdx]
 
     brokenBool = to_bool(inheritanceBroken)
@@ -425,7 +440,7 @@ END {
     m = m "],\"folders\":["
     for (idx = 0; idx < folder_count; idx++) {
         if (idx > 0) m = m ","
-        m = m "{\"path\":" json_str(folder_path[idx]) ",\"broken\":" (folder_broken[idx] ? "true" : "false") ",\"share\":" json_str(folder_share[idx]) "}"
+        m = m "{\"path\":" json_str(folder_path[idx]) ",\"broken\":" (folder_broken[idx] ? "true" : "false") ",\"share\":" json_str(folder_share[idx]) ",\"created\":" json_str(folder_created[idx]) ",\"modified\":" json_str(folder_modified[idx]) ",\"accessed\":" json_str(folder_accessed[idx]) "}"
     }
     m = m "],\"shares\":["
     for (s = 0; s < share_count; s++) {
@@ -448,6 +463,7 @@ END {
     }
     m = m "]"
     m = m ",\"scanComplete\":" (scancomplete == "true" ? "true" : "false")
+    m = m ",\"hasFileMetadata\":" (has_file_metadata ? "true" : "false")
     # If the bash driver already dropped the file's last physical line
     # because it wasn't newline-terminated (truncdropped==1), an unterminated
     # quote still open at EOF here is very likely that SAME lost row (the

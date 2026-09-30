@@ -253,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.5.4
+    Version: 0.5.5
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -319,7 +319,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.5.4'
+$ScriptVersion = '0.5.5'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -1018,6 +1018,15 @@ function Get-ObjectAcl {
         file write happens once, back on the main thread, after this item's
         result streams back -- multiple threads calling Add-Content on the same
         file concurrently is not something to rely on being safe.
+
+        Also captures Created/Modified/Accessed (UTC, ISO 8601 round-trip
+        format so they're unambiguous and directly parseable regardless of
+        locale) off the SAME DirectoryInfo/FileInfo object already being
+        constructed for the ACL call -- essentially free, no extra filesystem
+        round-trip. A timestamp-read failure is deliberately non-fatal and
+        logged separately: it must never cost the ACL data that already read
+        successfully, since permissions are this tool's actual core purpose
+        and timestamps are a later, optional addition on top of that.
     #>
     param([Parameter(Mandatory)][string]$ItemPath, [Parameter(Mandatory)][bool]$IsDirectory, $ErrorCollector = $null)
 
@@ -1035,36 +1044,55 @@ function Get-ObjectAcl {
     $sections = [System.Security.AccessControl.AccessControlSections]::Access -bor `
                 [System.Security.AccessControl.AccessControlSections]::Owner -bor `
                 [System.Security.AccessControl.AccessControlSections]::Group
+
+    $fsInfo = $null
+    $acl = $null
     try {
+        if ($IsDirectory) { $fsInfo = New-Object System.IO.DirectoryInfo($safePath) }
+        else { $fsInfo = New-Object System.IO.FileInfo($safePath) }
+
         if ($script:IsPSCore) {
-            if ($IsDirectory) {
-                $di = New-Object System.IO.DirectoryInfo($safePath)
-                return [System.IO.FileSystemAclExtensions]::GetAccessControl($di, $sections)
-            }
-            else {
-                $fi = New-Object System.IO.FileInfo($safePath)
-                return [System.IO.FileSystemAclExtensions]::GetAccessControl($fi, $sections)
-            }
+            $acl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fsInfo, $sections)
         }
         else {
             if ($IsDirectory) {
-                return [System.IO.Directory]::GetAccessControl($safePath, $sections)
+                $acl = [System.IO.Directory]::GetAccessControl($safePath, $sections)
             }
             else {
-                return [System.IO.File]::GetAccessControl($safePath, $sections)
+                $acl = [System.IO.File]::GetAccessControl($safePath, $sections)
             }
         }
     }
     catch [System.UnauthorizedAccessException] {
         if ($null -ne $ErrorCollector) { $ErrorCollector.Add(@{ ItemPath = $ItemPath; Message = 'Access denied reading ACL.' }) }
         else { Write-AuditError -ItemPath $ItemPath -Message 'Access denied reading ACL.' }
+        return $null
     }
     catch {
         $msg = "Failed reading ACL: $($_.Exception.Message)"
         if ($null -ne $ErrorCollector) { $ErrorCollector.Add(@{ ItemPath = $ItemPath; Message = $msg }) }
         else { Write-AuditError -ItemPath $ItemPath -Message $msg }
+        return $null
     }
-    return $null
+
+    $created = $null; $modified = $null; $accessed = $null
+    try {
+        $created  = $fsInfo.CreationTimeUtc.ToString('o')
+        $modified = $fsInfo.LastWriteTimeUtc.ToString('o')
+        $accessed = $fsInfo.LastAccessTimeUtc.ToString('o')
+    }
+    catch {
+        $msg = "Read the ACL, but could not read Created/Modified/Accessed timestamps: $($_.Exception.Message)"
+        if ($null -ne $ErrorCollector) { $ErrorCollector.Add(@{ ItemPath = $ItemPath; Message = $msg }) }
+        else { Write-AuditError -ItemPath $ItemPath -Message $msg }
+    }
+
+    return [PSCustomObject]@{
+        Acl      = $acl
+        Created  = $created
+        Modified = $modified
+        Accessed = $accessed
+    }
 }
 
 #endregion Helper functions ----------------------------------------------------
@@ -1159,8 +1187,12 @@ function Get-ItemAuditRows {
         Errors = New-Object System.Collections.Generic.List[object]
     }
 
-    $acl = Get-ObjectAcl -ItemPath $ItemPath -IsDirectory $IsDirectory -ErrorCollector $result.Errors
-    if (-not $acl) { return $result }
+    $aclResult = Get-ObjectAcl -ItemPath $ItemPath -IsDirectory $IsDirectory -ErrorCollector $result.Errors
+    if (-not $aclResult) { return $result }
+    $acl = $aclResult.Acl
+    $created = $aclResult.Created
+    $modified = $aclResult.Modified
+    $accessed = $aclResult.Accessed
 
     $inheritanceBroken = $acl.AreAccessRulesProtected
     $owner = $null
@@ -1219,6 +1251,9 @@ function Get-ItemAuditRows {
             RightsDetail         = $rightsInfo.Detail
             IsInheritedAce       = $ace.IsInherited
             AppliesTo            = $applies
+            Created              = $created
+            Modified             = $modified
+            Accessed             = $accessed
         }
         $result.FolderRows.Add($folderRow)
 
@@ -1236,6 +1271,9 @@ function Get-ItemAuditRows {
             IsInheritedAce       = $ace.IsInherited
             InheritanceBrokenHere = $inheritanceBroken
             AppliesTo            = $applies
+            Created              = $created
+            Modified             = $modified
+            Accessed             = $accessed
         })
 
         if ($ExpandGroups -and $idInfo.Type -eq 'Group' -and ($idInfo.Name -notin $ExpandGroupsExclude) -and
@@ -1256,6 +1294,9 @@ function Get-ItemAuditRows {
                     IsInheritedAce       = $ace.IsInherited
                     InheritanceBrokenHere = $inheritanceBroken
                     AppliesTo            = $applies
+                    Created              = $created
+                    Modified             = $modified
+                    Accessed             = $accessed
                 })
             }
         }

@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.7.0
+    Version: 0.7.1
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,7 +132,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.7.0'
+$ScriptVersion = '0.7.1'
 
 $ErrorActionPreference = 'Stop'
 
@@ -593,7 +593,7 @@ $shareOrder   = New-Object System.Collections.Generic.List[string]   # share key
 $shareFolderCounts = @{}   # share key -> distinct folder count
 
 function Get-OrAdd-Folder {
-    param([string]$Path)
+    param([string]$Path, [string]$Created = $null, [string]$Modified = $null, [string]$Accessed = $null)
     if ($folderLookup.ContainsKey($Path)) { return $folderLookup[$Path] }
     $shareKey = Get-ShareKeyFromPath -Path $Path
     if (-not $shareFolderCounts.ContainsKey($shareKey)) {
@@ -605,7 +605,11 @@ function Get-OrAdd-Folder {
     # InheritanceBrokenHere=True row for this folder -- precomputed here
     # rather than left for the client to derive from edges (which, once
     # partitioned by share, wouldn't all be loaded at once to derive it from).
-    $folderIndex.Add([ordered]@{ path = $Path; broken = $false; share = $shareKey })
+    # Created/Modified/Accessed (optional -- see $hasFileMetadata below) are
+    # folder-level properties too: every ACE row for this same folder should
+    # carry the same three values, so whichever row happens to create this
+    # folder record first is as good as any other to take them from.
+    $folderIndex.Add([ordered]@{ path = $Path; broken = $false; share = $shareKey; created = $Created; modified = $Modified; accessed = $Accessed })
     $idx = $folderIndex.Count - 1
     $folderLookup[$Path] = $idx
     return $idx
@@ -618,11 +622,22 @@ $rightsDistribution = New-Object 'int[]' 6
 $broadPrincipalFolders = New-Object System.Collections.Generic.HashSet[int]
 $totalEdgeCount = 0
 $fileRowsExcluded = 0
+# Created/Modified/Accessed are optional columns added in Invoke-NTFSPermissionAudit.ps1
+# 0.5.5 -- an older CSV (0.5.4 and earlier) simply won't have them. Accessing a
+# genuinely missing key on an Import-CsvRobust row via dot-notation returns $null
+# (confirmed directly, not assumed), so every per-row read below is already safe
+# either way; this flag is purely the SCHEMA-level "does this scan have the data
+# at all", checked once, used to tell the client whether to show the feature.
+$hasFileMetadata = $false
 
 $i = 0
 foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
     $i++
     if ($i % 5000 -eq 0) { Write-Progress -Activity 'Building access map' -Status "$i rows processed" }
+    if ($i -eq 1) {
+        $rowPropNames = $row.PSObject.Properties.Name
+        $hasFileMetadata = ($rowPropNames -contains 'Created') -and ($rowPropNames -contains 'Modified') -and ($rowPropNames -contains 'Accessed')
+    }
 
     # The interactive map is folder-centric by design (folders are the thing
     # you navigate; identities are the other node type) -- a FILE row's own
@@ -637,7 +652,7 @@ foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
     if ($row.ObjectType -eq 'File') { $fileRowsExcluded++; continue }
 
     $identityIdx = Get-OrAdd-Identity -Sid $row.IdentitySid -Name $row.IdentityName -Type $row.IdentityType
-    $folderIdx   = Get-OrAdd-Folder -Path (Get-NormalizedPath $row.Path)
+    $folderIdx   = Get-OrAdd-Folder -Path (Get-NormalizedPath $row.Path) -Created $row.Created -Modified $row.Modified -Accessed $row.Accessed
     $shareKey    = $folderIndex[$folderIdx].share
 
     $inheritanceBroken = ConvertTo-Bool $row.InheritanceBrokenHere
@@ -747,6 +762,7 @@ $manifestObject = [ordered]@{
     scanErrors = $scanErrors
     scanComplete = $scanComplete
     truncatedRowsDropped = $script:truncatedRowsDropped
+    hasFileMetadata = $hasFileMetadata
 }
 
 Write-Verbose "Writing $DataDirName\manifest.js ..."

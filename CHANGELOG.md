@@ -2,6 +2,75 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.1] - Created/Modified/Accessed capture, aged-folder filter, retention observation
+
+Fully backward compatible: an older CSV (from `Invoke-NTFSPermissionAudit.ps1`
+0.5.4 or earlier) simply doesn't have the three new columns, and every layer
+below detects that and degrades gracefully -- no crash, no misleading data,
+just the feature quietly not being available for that report (with a plain
+note on the Summary page saying so).
+
+### Added -- `Invoke-NTFSPermissionAudit.ps1` (bumped to 0.5.5)
+- Captures Created/Modified/Accessed (UTC, ISO 8601 round-trip format) for
+  every folder (and file, when `-IncludeFiles` is set) -- added to both
+  `FolderPermissions.csv` and `IdentityPermissions.csv`. `Get-ObjectAcl`
+  already constructed a `DirectoryInfo`/`FileInfo` object for the ACL call
+  itself on PS7+; these three timestamps are read off that same object, so
+  this is essentially free -- no extra filesystem round-trip. A timestamp-
+  read failure is caught separately from the ACL read and is non-fatal: it
+  can never cost the permissions data itself, which remains this tool's
+  actual core purpose.
+
+### Added -- `Build-AccessMapHtml.ps1` / `Build-AccessMapHtml.sh`+`build.awk`
+  (bumped to 0.7.1)
+- Detect the three new columns once, via the CSV's own header (not per-row --
+  every row already tolerates a missing column safely, returning empty/`""`,
+  confirmed directly rather than assumed), and expose the result as a
+  `hasFileMetadata` flag in the manifest alongside each folder's own
+  `created`/`modified`/`accessed` fields.
+- Verified end-to-end against both an existing pre-0.5.5 CSV (correctly
+  produces `hasFileMetadata: false`, empty fields, no crash) and a synthetic
+  post-0.5.5-shaped CSV (correctly produces `hasFileMetadata: true` with the
+  right values) -- and cross-checked the two build paths produce byte-
+  identical manifest data for the same input, same rigor as every other
+  build-script feature in this project.
+
+### Added -- `AccessMapTemplate.html`
+- A folder's own page shows Created/Last modified/Last accessed (when
+  available), formatted for readability, the same way an identity's own AD
+  timestamps already appear on its own card.
+- **Aged folders filter**: a new header button cycling off -> 1yr+ -> 5yr+ ->
+  10yr+ (since last modified) -> off, composing with the existing search and
+  Broken-inheritance filter the same way the other quick filters already do.
+  Only shown at all when `DATA.hasFileMetadata` is true. A folder with no
+  Modified value captured for that specific item (even when the scan overall
+  has the data) is excluded from an active aged filter rather than shown as
+  a false positive -- "definitely old" is the claim being made, not
+  "unknown age".
+- **Summary page**: a plain info banner when `hasFileMetadata` is false,
+  saying so and naming the minimum scanner version needed, rather than the
+  feature just silently not being there with no explanation.
+- **New Observations entry**: folders unmodified for 5+ years (a fixed
+  threshold for this specific observation, independent of the sidebar's own
+  user-controlled 1yr/5yr/10yr cycle), with sourced data-retention guidance
+  spanning NZ (Privacy Act 2020, IPP 9), AU (Privacy Act 1988, APP 11.2), EU
+  (GDPR Article 5(1)(e), storage limitation), US (NIST SP 800-53 SI-12), and
+  CIS Controls v8 (Safeguard 3.4, Enforce Data Retention) -- added a new `EU`
+  region-pill style alongside the existing AU/NZ/US/Intl ones, since GDPR is
+  jurisdiction-specific rather than a globally-adopted framework like CIS.
+  The existing Observations section disclaimer (already present, already
+  framing every observation as a heuristic starting point rather than a
+  compliance determination) was extended to also point at each
+  jurisdiction's own privacy regulator for the retention-related items
+  specifically, alongside the cybersecurity bodies it already named.
+- Verified: the new observation and filter are both present with correct
+  counts against the metadata-bearing test dataset, and both correctly
+  absent against an existing dataset without the new columns; the
+  observation's own action button correctly jumps to the folder list with
+  the 5yr+ filter already applied and the header button's label in sync.
+  Full pre-existing regression suite still passes with zero errors on both
+  build paths after these changes.
+
 ## [0.7.0] - Dark/light mode, deep links, GitHub footer link, Users/Groups filter
 
 All four features below are confined to `AccessMapTemplate.html` -- neither

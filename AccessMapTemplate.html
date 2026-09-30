@@ -88,6 +88,7 @@
   .crumbPlain { color:var(--muted); font-weight:400; }
   .crumbSep { color:var(--muted); margin:0 5px; font-weight:400; }
   .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
+  .folderMetaRow { margin-top:6px; }
   .card .field b { color:var(--muted); font-weight:500; }
   .treeWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; flex:1; min-height:0; display:flex; flex-direction:column; }
   .treeToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:6px; flex-shrink:0; }
@@ -153,6 +154,7 @@
   .legendSwatch { width:11px; height:11px; border-radius:2px; flex-shrink:0; }
   .disclaimerBanner { background:#2a2410; border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:10px 14px; font-size:12px; margin-bottom:16px; }
   .incompleteBanner { background:#3a1a1a; border:1px solid var(--bad); color:#ff9d9d; border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; font-weight:500; }
+  .infoBanner { background:var(--panel2); border:1px solid var(--border); color:var(--muted); border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; }
   .headerIncompleteBadge { background:var(--bad); color:#fff; font-size:11px; font-weight:600; padding:3px 9px; border-radius:10px; margin-left:6px; }
   .obsCard { border-left:3px solid var(--warn); background:var(--panel2); border-radius:0 6px 6px 0; padding:10px 14px; margin-bottom:10px; }
   .obsCard .obsTitle { font-weight:600; font-size:13px; margin-bottom:4px; }
@@ -163,6 +165,7 @@
   .regionPill-AU { background:#003a5c; color:#7dd3fc; }
   .regionPill-NZ { background:#1a2e1a; color:#86efac; }
   .regionPill-US { background:#2e1a3a; color:#d8b4fe; }
+  .regionPill-EU { background:#2e2a1a; color:#fde68a; }
   .regionPill-Intl { background:#2c333d; color:var(--muted); }
   .abuseTable { width:100%; border-collapse:collapse; font-size:12px; }
   .abuseTable th, .abuseTable td { text-align:left; padding:5px 8px; border-bottom:1px solid #22272e; vertical-align:top; }
@@ -241,6 +244,7 @@
     <div class="quickfilters">
       <button id="btnBroken" class="filterbtn warnbtn">Broken inheritance folders</button>
       <button id="btnDormant" class="filterbtn badbtn">Disabled / dormant identities</button>
+      <button id="btnAged" class="filterbtn warnbtn" style="display:none;" title="Cycles: off -> 1yr+ -> 5yr+ -> 10yr+ since last modified -> off">Aged folders</button>
     </div>
     <button id="themeToggleBtn" class="themeToggleBtn" title="Toggle light/dark (follows your browser by default)"></button>
   </header>
@@ -317,7 +321,14 @@ const DATA = {
   toolkitVersion: ACCESS_MAP_MANIFEST.toolkitVersion,
   scanErrors: ACCESS_MAP_MANIFEST.scanErrors,
   scanComplete: ACCESS_MAP_MANIFEST.scanComplete,
-  truncatedRowsDropped: ACCESS_MAP_MANIFEST.truncatedRowsDropped
+  truncatedRowsDropped: ACCESS_MAP_MANIFEST.truncatedRowsDropped,
+  // Created/Modified/Accessed per folder are optional -- only present when
+  // built from a CSV produced by Invoke-NTFSPermissionAudit.ps1 0.5.5+.
+  // !! coerces an older manifest's genuinely absent field to false rather
+  // than undefined, though in practice this template and the build script
+  // that produced any given manifest are always the same version pair --
+  // there's no supported scenario mixing an old manifest with this template.
+  hasFileMetadata: !!ACCESS_MAP_MANIFEST.hasFileMetadata
 };
 
 /* ------------------------------ Lazy share data ---------------------------- */
@@ -424,7 +435,8 @@ let state = {
   filterDormant: 0,    // same, for the disabled/dormant/locked identities filter
   sortDir: 1,          // sidebar list sort direction: 1 = A-Z, -1 = Z-A
   filterIdentityKind: 0, // sidebar identities filter, tri-state: 0=all, 1=Users (non-Group), 2=Groups only
-  sortGroupsFirst: false  // when true, all Groups sort before all non-Groups (each block still respects sortDir/search/filterIdentityKind)
+  sortGroupsFirst: false, // when true, all Groups sort before all non-Groups (each block still respects sortDir/search/filterIdentityKind)
+  filterAgedYears: 0      // sidebar folder list "aged" filter, cycles 0 (off) -> 1 -> 5 -> 10 (years since last modified) -> back to 0; only meaningful when DATA.hasFileMetadata is true
 };
 
 // Case-insensitive comparator for anything shown alphabetically (sidebar
@@ -649,6 +661,22 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function fmtBool(b) { return b === true ? 'Yes' : (b === false ? 'No' : ''); }
+function fmtDate(iso) {
+  // Created/Modified/Accessed are stored as raw ISO-8601 (round-trip,
+  // locale-independent) strings -- reformatted here into something more
+  // readable for display; ageInDays/the aged-document filter still parse
+  // the RAW value directly via new Date(iso), not this formatted string.
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso; // fall back to the raw string rather than hide a genuinely unparseable value
+  return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function ageInDays(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24);
+}
 function truncateLabel(s, n) { if (!s) return ''; return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
 
 function downloadCsv(filename, rows, columns) {
@@ -730,6 +758,19 @@ function renderList() {
     // filterBroken: 0=off, 1=show only broken-inheritance folders, 2=hide them
     if (state.filterBroken === 1) items = items.filter(x => x.f.broken);
     else if (state.filterBroken === 2) items = items.filter(x => !x.f.broken);
+    // filterAgedYears: 0=off, else show only folders whose Modified date is
+    // at least that many years old. A folder with no Modified value at all
+    // (this scan didn't capture it for that specific item, even if
+    // DATA.hasFileMetadata is true overall) is excluded rather than shown
+    // as a false positive -- "definitely old" is the claim being made here,
+    // not "unknown age".
+    if (state.filterAgedYears > 0) {
+      const thresholdDays = state.filterAgedYears * 365;
+      items = items.filter(x => {
+        const age = ageInDays(x.f.modified);
+        return age !== null && age >= thresholdDays;
+      });
+    }
     // NOTE: no separate sort here -- getFolderListInTreeOrder() already
     // ordered everything (see there for why a flat string sort isn't used),
     // and .filter() preserves that relative order.
@@ -1727,6 +1768,22 @@ function folderInfoCard(f) {
     badge.textContent = 'Inheritance broken here';
     div.appendChild(badge);
   }
+
+  // Created/Modified/Accessed are optional -- only present if the scan that
+  // produced this report captured them (Invoke-NTFSPermissionAudit.ps1
+  // 0.5.5+; see the Summary page for whether THIS scan did). Shown the same
+  // way an identity's own AD timestamps are shown on its own card -- a
+  // blank/absent field just doesn't render, no special casing needed.
+  if (DATA.hasFileMetadata) {
+    const field = (label, val) => val ? `<span class="field"><b>${esc(label)}:</b> ${esc(fmtDate(val))}</span>` : '';
+    const metaHtml = field('Created', f.created) + field('Last modified', f.modified) + field('Last accessed', f.accessed);
+    if (metaHtml) {
+      const metaWrap = document.createElement('div');
+      metaWrap.className = 'folderMetaRow';
+      metaWrap.innerHTML = metaHtml;
+      div.appendChild(metaWrap);
+    }
+  }
   return div;
 }
 
@@ -2093,6 +2150,13 @@ function computeObservations() {
     { region: 'AU', source: 'ACSC Essential Eight -- Restrict Administrative Privileges (Maturity Level 2)', text: 'Privileged access to systems and applications is automatically disabled after 12 months unless revalidated.' },
     { region: 'NZ', source: 'NZISM control 9.2.17.C.02', text: 'Where an agency grants limited higher access, it MUST be temporary and an exception rather than the norm, with a cessation date set.' }
   ];
+  const RETENTION_GUIDANCE = [
+    { region: 'NZ', source: 'Privacy Act 2020 -- Information Privacy Principle 9 (Limits on retention)', text: 'An agency that holds personal information must not keep that information for longer than is required for the purposes for which it may lawfully be used.' },
+    { region: 'AU', source: 'Privacy Act 1988 (Cth) -- Australian Privacy Principle 11.2', text: 'An entity must take reasonable steps to destroy or de-identify personal information it holds once it is no longer needed for any purpose for which it may be used or disclosed.' },
+    { region: 'EU', source: 'GDPR Article 5(1)(e) -- Storage limitation principle', text: 'Personal data must be kept in a form permitting identification of data subjects for no longer than is necessary for the purposes for which it is processed.' },
+    { region: 'US', source: 'NIST SP 800-53 SI-12 (Information Management and Retention)', text: 'Manage and retain system information and output in accordance with applicable laws, regulations, policies, and operational requirements.' },
+    { region: 'Intl', source: 'CIS Controls v8 -- Safeguard 3.4 (Enforce Data Retention)', text: "Retain data according to the enterprise's documented data management process, including both a minimum and a maximum retention timeline." }
+  ];
 
   if (broad.folderCount > 0) {
     observations.push({
@@ -2147,6 +2211,32 @@ function computeObservations() {
       why: 'Full Control allows changing permissions and taking ownership, not just reading/writing data -- it\'s rarely needed by more than a small set of administrators or data owners. A high share suggests broad over-provisioning rather than least-privilege access.',
       guidance: LEAST_PRIVILEGE_GUIDANCE
     });
+  }
+  if (DATA.hasFileMetadata) {
+    // 5 years is this observation's own fixed threshold for "worth flagging
+    // at all" (distinct from the sidebar's own 1yr/5yr/10yr cycle, which the
+    // viewer controls directly) -- a reasonable, common checkpoint for
+    // unstructured-data review across the frameworks cited below, without
+    // being so short it flags routine, actively-used folders.
+    const agedThresholdDays = 5 * 365;
+    const agedCount = DATA.folders.filter(f => {
+      const age = ageInDays(f.modified);
+      return age !== null && age >= agedThresholdDays;
+    }).length;
+    if (agedCount > 0) {
+      observations.push({
+        title: `${agedCount} folder(s) haven't been modified in 5+ years`,
+        why: 'Folders that haven\u2019t changed in years are a common home for data that should have been reviewed, archived, or deleted under a retention schedule long ago -- and every identity/group still holding access to them is attack surface for data nobody actually needs anymore. This flags "worth reviewing for retention", not "definitely delete" -- some old data is legitimately kept long-term (financial records, historical archives, etc.) for its own separate, valid reasons.',
+        guidance: RETENTION_GUIDANCE,
+        action: () => {
+          state.filterAgedYears = 5;
+          const btn = document.getElementById('btnAged');
+          btn.textContent = 'Aged folders (5yr+)';
+          btn.classList.add('state-show');
+          setTab('folders');
+        }
+      });
+    }
   }
 
   return observations;
@@ -2274,6 +2364,13 @@ function renderSummaryView() {
     content.appendChild(banner);
   }
 
+  if (!DATA.hasFileMetadata) {
+    const infoBanner = document.createElement('div');
+    infoBanner.className = 'infoBanner';
+    infoBanner.textContent = '\u2139 File/folder Created, Modified, and Accessed timestamps were not captured in this scan (needs Invoke-NTFSPermissionAudit.ps1 0.5.5 or later) -- aged-folder flagging and the metadata shown on a folder\u2019s own page are unavailable for this report. Nothing else is affected.';
+    content.appendChild(infoBanner);
+  }
+
   const idBreakdown = computeIdentityBreakdown();
   const userHealth = computeUserHealth();
   const rights = computeRightsDistribution();
@@ -2338,7 +2435,7 @@ function renderSummaryView() {
   obsSection.innerHTML = '<h2>Observations worth a closer look</h2>';
   const banner = document.createElement('div');
   banner.className = 'disclaimerBanner';
-  banner.textContent = 'These are heuristic, data-driven starting points for a conversation with your security/compliance team -- not a certified compliance assessment. The guidance text below is paraphrased from publicly available framework documentation (not quoted verbatim), and frameworks are periodically revised -- check the current, authoritative source (ACSC, GCSB/NCSC-NZ, NIST, CIS) before treating this as a compliance determination either way.';
+  banner.textContent = 'These are heuristic, data-driven starting points for a conversation with your security/compliance team -- not a certified compliance assessment. The guidance text below is paraphrased from publicly available framework/legislation text (not quoted verbatim), and both frameworks and laws are periodically revised -- check the current, authoritative source (ACSC, GCSB/NCSC-NZ, NIST, CIS, or your own Privacy Commissioner/regulator for the retention-related items) before treating this as a compliance determination either way.';
   obsSection.appendChild(banner);
   if (observations.length === 0) {
     const none = document.createElement('div');
@@ -2672,6 +2769,22 @@ function init() {
     setFilterButtonUI('btnDormant', state.filterDormant);
     if (state.filterDormant !== 0 && state.tab !== 'identities') setTab('identities'); else renderList();
   };
+
+  // Aged-folders filter only makes sense (and is only shown at all) when
+  // this scan actually captured Created/Modified/Accessed -- see
+  // DATA.hasFileMetadata and the Summary page's own note when it's missing.
+  const AGED_YEAR_CYCLE = [0, 1, 5, 10];
+  if (DATA.hasFileMetadata) {
+    document.getElementById('btnAged').style.display = '';
+    document.getElementById('btnAged').onclick = () => {
+      const curIdx = AGED_YEAR_CYCLE.indexOf(state.filterAgedYears);
+      state.filterAgedYears = AGED_YEAR_CYCLE[(curIdx + 1) % AGED_YEAR_CYCLE.length];
+      const btn = document.getElementById('btnAged');
+      btn.textContent = state.filterAgedYears === 0 ? 'Aged folders' : `Aged folders (${state.filterAgedYears}yr+)`;
+      btn.classList.toggle('state-show', state.filterAgedYears !== 0);
+      if (state.filterAgedYears !== 0 && state.tab !== 'folders') setTab('folders'); else renderList();
+    };
+  }
 
   if (DATA.scanComplete === false || (DATA.truncatedRowsDropped || 0) > 0) {
     const badge = document.getElementById('headerIncompleteBadge');
