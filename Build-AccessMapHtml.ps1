@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.7.1
+    Version: 0.7.2
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,9 +132,10 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.7.1'
+$ScriptVersion = '0.7.2'
 
 $ErrorActionPreference = 'Stop'
+$script:BuildStartedAt = Get-Date
 
 $InputFolder = (Resolve-Path -LiteralPath $InputFolder).ProviderPath
 
@@ -757,6 +758,7 @@ $manifestObject = [ordered]@{
     }
     maxEdgesPerNode = $MaxEdgesPerNode
     generatedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    buildDurationSeconds = [Math]::Round(((Get-Date) - $script:BuildStartedAt).TotalSeconds, 1)
     sourceFolder = $InputFolder
     toolkitVersion = $ScriptVersion
     scanErrors = $scanErrors

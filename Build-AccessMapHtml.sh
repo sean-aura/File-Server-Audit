@@ -60,8 +60,9 @@
 #     only means a byte-diff between a PowerShell-built and a bash-built
 #     report from the same CSVs won't be empty, even though both are correct.
 
-SCRIPT_VERSION="0.7.1"
+SCRIPT_VERSION="0.7.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+BUILD_STARTED_AT=$(date +%s)
 
 print_usage() {
     sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -269,6 +270,17 @@ if [ "$AWK_STATUS" -ne 0 ]; then
     echo "ERROR: build.awk failed (exit $AWK_STATUS)." >&2
     exit 1
 fi
+
+# Appended as a separate, trailing statement rather than edited into awk's
+# own JSON construction: manifest.js is loaded via <script src>, executed
+# top-to-bottom as one file, so this line runs immediately after the
+# "const ACCESS_MAP_MANIFEST = {...};" declaration above it and just adds a
+# property onto the same object -- before anything else ever reads it. Kept
+# out of build.awk specifically to avoid needing systime() (a gawk-only
+# extension not available in mawk, which this script is also tested
+# against) just to measure a duration bash already knows on its own.
+BUILD_DURATION_SECONDS=$(( $(date +%s) - BUILD_STARTED_AT ))
+echo "ACCESS_MAP_MANIFEST.buildDurationSeconds = ${BUILD_DURATION_SECONDS};" >> "$DATA_DIR/manifest.js"
 
 # ---- Finalize share_N.js from the prefix + raw-edges + suffix pieces awk wrote ----
 

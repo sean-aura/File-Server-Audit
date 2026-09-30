@@ -2,10 +2,13 @@
 
 Three scripts for auditing NTFS/share permissions on a DFS-fronted Windows
 file server pair (one active node, one standby), plus a self-contained
-interactive HTML report. Works under both Windows PowerShell 5.1 and
-PowerShell 7+.
+interactive HTML report -- or three and a half, really: step 3
+(`Build-AccessMapHtml.ps1`) also ships as a bash/awk equivalent
+(`Build-AccessMapHtml.sh` + `build.awk`) for turning the same CSVs into the
+same report from Linux/macOS/WSL, without needing PowerShell installed
+there at all. Works under both Windows PowerShell 5.1 and PowerShell 7+.
 
-Version 0.7.1. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.7.2. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated

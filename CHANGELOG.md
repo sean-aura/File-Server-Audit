@@ -2,6 +2,72 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.2] - UI polish: unified button style, light-mode fixes, build duration
+
+### Fixed -- real light-mode readability bug
+- **Several elements had hardcoded hex colors that bypassed the theme
+  variable system entirely**, so they stayed dark-mode-dark even when
+  light mode was active: `.treeRow.selected` (a folder tree's selected-row
+  highlight), `.pill.inherited` (the "inherited" permission badge),
+  `button:hover`, and `svg.graph`'s background. Combined with `--text`
+  correctly switching to a dark color in light mode, this produced dark
+  text on a background that never actually left dark mode -- exactly the
+  "folder list in light mode is still dark, text unreadable" report. All
+  four now use theme variables (added a new `--selected-bg`, themed per
+  mode, for the tree-row highlight specifically).
+
+### Changed
+- **Light mode toned down** to an off-white palette (`--bg`/`--panel`/
+  `--panel2`) rather than a stark white/near-white, easier on the eyes for
+  a page someone may have open for a while.
+- **Unified "chip" button style** across every small utility control that
+  toggles or cycles a view option: the header's Broken-inheritance/
+  Disabled-dormant/Aged-folders quick filters, the theme toggle, the
+  sidebar's Users/Groups/Both filter, the new Groups-first control, and
+  the GitHub footer link. Previously these all looked different despite
+  doing the same kind of job (colored borders at rest for the header
+  filters, a bare checkbox for Groups-first, unstyled text for "All", a
+  plain text link for GitHub) -- now they share one neutral resting look,
+  colored only in an active state (green "on" / red "hidden"), consistent
+  with how the show/hide states already worked.
+- **Header layout**: the Broken-inheritance/Disabled-dormant/Aged-folders
+  buttons now sit grouped with the theme toggle on the header's right
+  side (one `.headerRightGroup`), rather than visually separated from it.
+- **Groups-first is now a toggle button**, not a checkbox, positioned to
+  the right of the Users/Groups/Both cycle button (which sits on the
+  left) -- matching the chip style used everywhere else in this round.
+- **Users/Groups/Both button labels now always say what's currently
+  shown** ("Users & Groups" / "Users only" / "Groups only") instead of a
+  bare "All" that didn't explain what clicking it would do.
+- **GitHub footer link**: restyled as a chip, right-aligned, reading
+  "File Server Permission Audit Toolkit \u2197" instead of the bare word
+  "GitHub".
+- **Footer now shows build duration** next to the generated date/time
+  (e.g. "built in 2.3s"). `Build-AccessMapHtml.ps1` measures this directly.
+  The bash/awk path measures it in bash and appends it as a separate,
+  trailing JS statement onto `manifest.js` after `build.awk` finishes
+  (`ACCESS_MAP_MANIFEST.buildDurationSeconds = N;`) rather than editing
+  awk's own JSON construction -- deliberately avoids needing `systime()`
+  (a gawk-only extension not available in `mawk`, which this project is
+  also tested against) just to measure a duration bash already knows on
+  its own. Genuinely absent (not just zero) on a report built by an older
+  version of either script; the footer simply omits the duration clause
+  when that's the case rather than showing "built in undefineds".
+
+### Fixed -- documentation
+- README's opening line called this "three scripts" -- corrected to note
+  step 3 (`Build-AccessMapHtml.ps1`) also ships as a bash/awk equivalent
+  for Linux/macOS/WSL, making it closer to three and a half.
+
+### Verified
+- Full pre-existing regression suite re-run after every change in this
+  round (including an update to `test_new_features.js` itself, since it
+  referenced the now-removed `groupsFirstChk` checkbox by id -- an
+  expected test-file update from the redesign, not a regression). Zero
+  errors across every suite. Both build paths (`Build-AccessMapHtml.ps1`
+  and `Build-AccessMapHtml.sh`+`build.awk`) still produce byte-identical
+  `AccessMap.html` from the same template.
+
 ## [0.7.1] - Created/Modified/Accessed capture, aged-folder filter, retention observation
 
 Fully backward compatible: an older CSV (from `Invoke-NTFSPermissionAudit.ps1`
