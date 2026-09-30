@@ -6,14 +6,34 @@
 <title>File Server Access Map</title>
 <style>
   :root {
+    /* Dark is the base/fallback. Light applies automatically when the OS
+       prefers it AND the user hasn't explicitly chosen (see the toggle
+       button below) -- an explicit choice (data-theme="light"/"dark")
+       always wins over the OS preference either way. */
     --bg: #111418; --panel: #1a1f26; --panel2: #20262f; --border: #2c333d;
     --text: #e6e9ee; --muted: #9aa4b2; --accent: #4da3ff; --warn: #ffb454; --bad: #ff5d5d;
     --good: #57d38c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme]) {
+      --bg: #f5f6f8; --panel: #ffffff; --panel2: #eef0f3; --border: #d8dce2;
+      --text: #1a1f26; --muted: #5b6472; --accent: #1a73e8; --warn: #b8720a; --bad: #d53c3c;
+      --good: #1e8e4f;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --panel2: #eef0f3; --border: #d8dce2;
+    --text: #1a1f26; --muted: #5b6472; --accent: #1a73e8; --warn: #b8720a; --bad: #d53c3c;
+    --good: #1e8e4f;
   }
   * { box-sizing: border-box; }
   body { margin:0; font-family: Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); }
   #app { display:flex; flex-direction:column; height:100vh; }
   header { padding:10px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; background:var(--panel); flex-shrink:0; }
+  .themeToggleBtn { margin-left:auto; font-size:16px; padding:6px 10px; flex-shrink:0; }
+  .identityFilterRow { display:flex; align-items:center; gap:10px; margin:0 10px 10px; }
+  .identityFilterRow .filterbtn { font-size:11px; padding:4px 8px; }
+  .groupsFirstLabel { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   header .quickfilters { margin-left:auto; display:flex; gap:8px; }
   button { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:6px 10px; cursor:pointer; font-size:12px; }
@@ -165,7 +185,8 @@
   .pill.explicit { background:#2c4a3d; color:var(--good); }
   .pill.deny { background:var(--bad); color:#fff; }
   #backBtn:disabled { opacity:0.4; cursor:default; }
-  footer { padding:6px 16px; font-size:11px; color:var(--muted); border-top:1px solid var(--border); flex-shrink:0; }
+  footer { padding:6px 16px; font-size:11px; color:var(--muted); border-top:1px solid var(--border); flex-shrink:0; display:flex; align-items:center; gap:10px; }
+  footer a { color:var(--accent); }
 
   /* Resizable / responsive split panes */
   #splitter { width:6px; flex-shrink:0; cursor:col-resize; background:var(--border); touch-action:none; }
@@ -221,6 +242,7 @@
       <button id="btnBroken" class="filterbtn warnbtn">Broken inheritance folders</button>
       <button id="btnDormant" class="filterbtn badbtn">Disabled / dormant identities</button>
     </div>
+    <button id="themeToggleBtn" class="themeToggleBtn" title="Toggle light/dark (follows your browser by default)"></button>
   </header>
   <div id="main">
     <div id="sidebar">
@@ -232,6 +254,10 @@
         <input id="searchBox" type="text" placeholder="Search...">
         <button id="sortDirBtn" title="Sort direction">A&ndash;Z</button>
       </div>
+      <div id="identityFilterRow" class="identityFilterRow">
+        <button id="identityKindBtn" class="filterbtn" title="Show Users, Groups, or both">All</button>
+        <label class="groupsFirstLabel"><input type="checkbox" id="groupsFirstChk"> Groups first</label>
+      </div>
       <div id="listPanel"></div>
     </div>
     <div id="splitter" title="Drag to resize"></div>
@@ -239,7 +265,7 @@
       <div id="welcome"></div>
     </div>
   </div>
-  <footer id="footerLine"></footer>
+  <footer><span id="footerLine"></span> <a id="footerGithubLink" href="https://github.com/sean-aura/File-Server-Audit" target="_blank" rel="noopener noreferrer">GitHub</a></footer>
 </div>
 
 <script src="AccessMap_data/manifest.js"></script>
@@ -396,7 +422,9 @@ let state = {
                         // different things (relationship hops here vs. subfolder nesting there).
   filterBroken: 0,     // sidebar quick filter, tri-state: 0=off, 1=show only, 2=hide
   filterDormant: 0,    // same, for the disabled/dormant/locked identities filter
-  sortDir: 1           // sidebar list sort direction: 1 = A-Z, -1 = Z-A
+  sortDir: 1,          // sidebar list sort direction: 1 = A-Z, -1 = Z-A
+  filterIdentityKind: 0, // sidebar identities filter, tri-state: 0=all, 1=Users (non-Group), 2=Groups only
+  sortGroupsFirst: false  // when true, all Groups sort before all non-Groups (each block still respects sortDir/search/filterIdentityKind)
 };
 
 // Case-insensitive comparator for anything shown alphabetically (sidebar
@@ -656,7 +684,22 @@ function renderList() {
     // filterDormant: 0=off, 1=show only disabled/dormant/locked, 2=hide them
     if (state.filterDormant === 1) items = items.filter(x => x.idn.flagDisabled || x.idn.flagDormant || x.idn.flagLocked);
     else if (state.filterDormant === 2) items = items.filter(x => !(x.idn.flagDisabled || x.idn.flagDormant || x.idn.flagLocked));
-    items.sort((a, b) => state.sortDir * cmpText(a.idn.name, b.idn.name));
+    // filterIdentityKind: 0=all, 1=Users (anything that isn't a Group -- User,
+    // Computer, Well-known/Local, Unresolved), 2=Groups only. Composes with
+    // filterDormant above (both apply together, not as alternatives) and with
+    // sortGroupsFirst below -- none of these three fight each other.
+    if (state.filterIdentityKind === 1) items = items.filter(x => x.idn.type !== 'Group');
+    else if (state.filterIdentityKind === 2) items = items.filter(x => x.idn.type === 'Group');
+    if (state.sortGroupsFirst) {
+      items.sort((a, b) => {
+        const aGroup = a.idn.type === 'Group' ? 0 : 1;
+        const bGroup = b.idn.type === 'Group' ? 0 : 1;
+        if (aGroup !== bGroup) return aGroup - bGroup; // Groups block always first, regardless of sortDir
+        return state.sortDir * cmpText(a.idn.name, b.idn.name);
+      });
+    } else {
+      items.sort((a, b) => state.sortDir * cmpText(a.idn.name, b.idn.name));
+    }
     const total = items.length;
     items = items.slice(0, LIMIT);
     items.forEach(({ idn, idx }) => {
@@ -1614,6 +1657,7 @@ function renderIdentity(idx) {
   });
 
   content.appendChild(makeResizableSplitPanes(topContent, bottomContent, 'accessMapIdentityPaneRatio', 0.55));
+  updateUrlHash();
 }
 
 /* -------------------------------- Folder view -------------------------------- */
@@ -1895,6 +1939,7 @@ function renderFolder(idx) {
   const bottomContent = renderFolderAclList(idx, (identIdx) => selectIdentity(identIdx, true));
 
   content.appendChild(makeResizableSplitPanes(topContent, bottomContent, 'accessMapFolderPaneRatio', 0.55));
+  updateUrlHash();
 }
 
 /* -------------------------------- Quick filters ------------------------------ */
@@ -2137,6 +2182,7 @@ function showScanErrorsDetail() {
   const content = document.getElementById('content');
   content.classList.remove('content-split');
   content.innerHTML = '';
+  clearUrlHash();
   const card = document.createElement('div');
   card.className = 'summarySection';
   const title = document.createElement('h2');
@@ -2212,6 +2258,7 @@ function renderSummaryView() {
   const content = document.getElementById('content');
   content.classList.remove('content-split');
   content.innerHTML = '';
+  clearUrlHash();
 
   if (DATA.scanComplete === false || (DATA.truncatedRowsDropped || 0) > 0) {
     const banner = document.createElement('div');
@@ -2487,13 +2534,96 @@ function makeResizableSplitPanes(topContent, bottomContent, storageKey, defaultT
   return wrap;
 }
 
+/* -------------------------------- Theme toggle -------------------------------- */
+
+function effectiveThemeIsLight() {
+  const explicit = document.documentElement.getAttribute('data-theme');
+  if (explicit === 'light') return true;
+  if (explicit === 'dark') return false;
+  return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+}
+
+function updateThemeBtnLabel() {
+  const btn = document.getElementById('themeToggleBtn');
+  if (!btn) return;
+  // Label names the mode a click will switch TO, matching how the sidebar's
+  // own A-Z/Z-A button already communicates "what happens if you click this".
+  btn.textContent = effectiveThemeIsLight() ? '\ud83c\udf19 Dark' : '\u2600\ufe0f Light';
+}
+
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('accessMapTheme'); } catch (e) { /* ignore -- falls back to the OS preference */ }
+  if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+  updateThemeBtnLabel();
+  document.getElementById('themeToggleBtn').onclick = () => {
+    const next = effectiveThemeIsLight() ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('accessMapTheme', next); } catch (e) { /* ignore -- choice just won't persist across reloads */ }
+    updateThemeBtnLabel();
+  };
+}
+
+/* ------------------------------ Deep-link (URL hash) --------------------------- */
+/* A link like AccessMap.html#f:12:graph or #i:5 refers to a specific folder/
+   identity (by index) and detail tab within THIS generated report -- it's only
+   ever meaningful alongside this exact AccessMap.html/AccessMap_data pairing
+   (indices aren't stable across a different run's rebuild), not a general,
+   portable reference to a filesystem path. history.replaceState (not
+   pushState/location.hash=) keeps the address bar in sync without adding
+   browser-level back/forward entries -- this app already has its own Back
+   button and in-app history (see pushHistory/goBack), and stacking browser-
+   native history on top of that would just be two competing mechanisms. */
+
+function clearUrlHash() {
+  // Same replaceState-preferred, location.hash-fallback approach as
+  // updateUrlHash -- see there for why both are attempted.
+  try { history.replaceState(null, '', location.pathname + location.search); }
+  catch (e) {
+    try { location.hash = ''; } catch (e2) { /* ignore */ }
+  }
+}
+
+function updateUrlHash() {
+  if (!state.selected) return;
+  const tabPart = state.detailTab === 'graph' ? ':graph' : '';
+  const hash = '#' + (state.selected.kind === 'folder' ? 'f:' : 'i:') + state.selected.idx + tabPart;
+  // history.replaceState is preferred (doesn't add a browser-native history
+  // entry, avoiding a second history mechanism competing with this app's own
+  // Back button); some environments reject a hash-only replaceState against
+  // a file:// URL, though, so fall back to a plain location.hash assignment
+  // (which does add a browser history entry) rather than silently giving up
+  // and leaving the address bar out of sync with what's on screen.
+  try { history.replaceState(null, '', hash); }
+  catch (e) {
+    try { location.hash = hash; } catch (e2) { /* ignore -- copying the current URL just won't carry the view */ }
+  }
+}
+
+function restoreFromHash() {
+  const m = /^#(f|i):(\d+)(:graph)?$/.exec(location.hash);
+  if (!m) return false;
+  const kind = m[1], idx = parseInt(m[2], 10), isGraph = !!m[3];
+  if (kind === 'f' && idx >= 0 && idx < DATA.folders.length) {
+    if (isGraph) state.detailTab = 'graph';
+    selectFolder(idx, false);
+    return true;
+  }
+  if (kind === 'i' && idx >= 0 && idx < DATA.identities.length) {
+    if (isGraph) state.detailTab = 'graph';
+    selectIdentity(idx, false);
+    return true;
+  }
+  return false;
+}
+
 /* ----------------------------------- Init ------------------------------------ */
 
 function init() {
   precompute();
-  renderSummaryView();
   renderList();
   initSplitter();
+  initTheme();
 
   document.getElementById('tabIdentities').onclick = () => setTab('identities');
   document.getElementById('tabFolders').onclick = () => setTab('folders');
@@ -2509,6 +2639,23 @@ function init() {
   };
   document.getElementById('backBtn').onclick = goBack;
   document.getElementById('summaryBtn').onclick = renderSummaryView;
+
+  // Users/Groups/Both tri-state (mirrors the header quick-filters' own cycle:
+  // off/all -> one setting -> the other -> back to all) and the independent
+  // "Groups first" sort option -- both compose with the existing search and
+  // Disabled/dormant filter rather than replacing or fighting them (see
+  // renderList's identities branch, which applies all of them together).
+  const identityKindLabels = ['All', 'Users', 'Groups'];
+  document.getElementById('identityKindBtn').onclick = () => {
+    state.filterIdentityKind = (state.filterIdentityKind + 1) % 3;
+    document.getElementById('identityKindBtn').textContent = identityKindLabels[state.filterIdentityKind];
+    document.getElementById('identityKindBtn').classList.toggle('state-show', state.filterIdentityKind !== 0);
+    if (state.tab !== 'identities') setTab('identities'); else renderList();
+  };
+  document.getElementById('groupsFirstChk').onchange = (e) => {
+    state.sortGroupsFirst = e.target.checked;
+    renderList();
+  };
 
   // Header quick-filter buttons are 3-way toggles -- off / show-only (green,
   // "ON") / hide (red, "HIDDEN") -- rather than one-shot actions, so they can
@@ -2535,6 +2682,12 @@ function init() {
 
   document.getElementById('footerLine').textContent =
     `Generated ${DATA.generatedAt} from ${DATA.sourceFolder} (toolkit v${DATA.toolkitVersion || '?'}) \u2014 point-in-time snapshot, not live data.`;
+
+  // A #f:<idx> / #i:<idx>[:graph] link in the address bar (see updateUrlHash)
+  // takes the visitor straight back to that exact view; anything else (no
+  // hash, or one that doesn't resolve) falls back to the normal Summary
+  // landing page.
+  if (!restoreFromHash()) renderSummaryView();
 }
 
 init();

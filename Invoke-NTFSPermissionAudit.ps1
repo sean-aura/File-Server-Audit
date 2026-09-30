@@ -253,7 +253,7 @@
         -IncludeFiles -MaxDepth 3 -OutputFolder C:\Audit\Run1
 
 .NOTES
-    Version: 0.5.3
+    Version: 0.5.4
 
     Works under both Windows PowerShell 5.1 and PowerShell 7+ (the ACL-reading code
     path differs internally between the two -- .NET Framework vs .NET Core expose
@@ -319,7 +319,7 @@ param(
 
 #region Setup ---------------------------------------------------------------
 
-$ScriptVersion = '0.5.3'
+$ScriptVersion = '0.5.4'
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -1508,6 +1508,27 @@ function Invoke-ParallelTreeWalk {
         $ExpandGroupsExclude = $using:ExpandGroupsExclude
         $IncludeInheritedFileAces = $using:IncludeInheritedFileAces
         $SkipInheritedAces = $using:SkipInheritedAces
+        # RightsCombos/SynchronizeFlag are script-scoped lookup tables (not
+        # top-level parameters, unlike everything just above), built once at
+        # the top of the main script -- easy to miss precisely because they
+        # aren't parameters, and missing them here is a real bug that shipped
+        # undetected: without this line, Convert-RightsToFriendly's own
+        # $script:RightsCombos/$script:SynchronizeFlag are $null inside every
+        # worker, so its masking (`-band (-bnot $script:SynchronizeFlag)`)
+        # silently degrades to a no-op instead of throwing, and its combo
+        # comparison falls through to the 'Special' catch-all for any ACE
+        # whose raw rights bits don't happen to match a reference constant
+        # bit-for-bit including Synchronize -- a real ACE granted through
+        # some other tool (confirmed here from an NFS-backed NAS, where the
+        # Unix-to-Windows ACL translation doesn't always set that bit the
+        # same way native Windows tooling does) can still correctly BE
+        # "Read & Execute" without matching that exactly. This produced a
+        # deterministic (not a race -- reported unchanged across
+        # ThrottleLimit 2/5/10/15) miscategorization: rows still present and
+        # correctly attributed to the right identity and folder, just
+        # reported as "Special" instead of their real, correct right.
+        $script:RightsCombos = $using:script:RightsCombos
+        $script:SynchronizeFlag = $using:script:SynchronizeFlag
         if ($adAvailable) {
             try { $script:PrincipalCtx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext('Domain') }
             catch { $adAvailable = $false }

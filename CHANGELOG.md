@@ -2,6 +2,132 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.0] - Dark/light mode, deep links, GitHub footer link, Users/Groups filter
+
+All four features below are confined to `AccessMapTemplate.html` -- neither
+build script needed any change, since both just copy this file byte-for-byte.
+
+### Added
+- **Dark/light mode.** Follows the browser's own `prefers-color-scheme` by
+  default; a toggle button at the top-right of the header lets the user
+  override it explicitly (persisted via `localStorage`, same graceful-
+  degradation pattern as the existing pane splitters -- if storage isn't
+  available, the toggle still works for the session, it just won't persist
+  across reloads). An explicit choice always wins over the OS preference;
+  with no explicit choice made, the OS preference is followed live.
+- **Deep links.** Selecting a folder or identity now updates the address bar
+  to `#f:<idx>` / `#i:<idx>` (with a `:graph` suffix if the Graph tab is
+  active), and opening `AccessMap.html#f:12` directly restores that exact
+  view -- tree/graph tab included. This is a link to a specific view *within
+  this one generated report* (the index is only stable for the lifetime of
+  this exact `AccessMap.html`/`AccessMap_data` pairing, not a portable
+  reference to a filesystem path -- a different run's rebuild can reorder
+  indices). Uses `history.replaceState` so it doesn't add browser-native
+  history entries competing with the app's own Back button and in-app
+  history; falls back to a plain `location.hash` assignment (which does add
+  a browser history entry) only if `replaceState` itself is rejected.
+- **GitHub link in the footer**, linking to
+  https://github.com/sean-aura/File-Server-Audit, opening in a new tab.
+- **Users/Groups/Both filter for the sidebar identities list**, a 3-way
+  cycle (mirroring the existing header quick-filters' own style) next to a
+  "Groups first" sort checkbox. "Groups" means `type === 'Group'`; "Users"
+  means everything else (User, Computer, Well-known/Local, Unresolved) --
+  the split that matters most for an access audit is "expandable group" vs.
+  "terminal principal", not stricter type-by-type buckets. Both compose
+  with the existing search box and the Disabled/dormant tri-state filter
+  rather than replacing or conflicting with them -- all of these apply
+  together in `renderList()`, and "Groups first" only changes relative
+  ordering within whatever the filters already narrowed down to.
+
+### Verified
+- New jsdom test suite (`test_new_features.js`) confirms: the theme toggle
+  correctly sets/reads `data-theme` and flips on each click; the GitHub
+  link has the correct `href` and opens in a new tab; the Users/Groups/Both
+  filter shows the exact expected count in each state and "Groups first"
+  produces an order where no Group ever appears after the first non-Group,
+  with the Disabled/dormant filter still composing correctly on top; the
+  URL hash updates correctly on folder/identity selection and on tab
+  switches, and clears on navigating to the Summary/scan-errors views;
+  opening a URL with a valid hash restores the exact folder (breadcrumb,
+  tree, and the correct share lazy-loaded) with zero errors.
+- Two jsdom-specific (not real-browser) quirks surfaced and were worked
+  around during testing, not worth mistaking for real bugs: `localStorage`
+  and `history.replaceState` are both stricter under jsdom's `file://`
+  origin handling than real desktop browsers typically are (jsdom throws
+  "not available for opaque origins" / rejects a hash-only `replaceState`
+  against a `file://` URL; real browsers generally allow both). Confirmed
+  by reproducing each in isolation with a minimal jsdom test outside the
+  app entirely. The existing try/catch pattern already used for the pane
+  splitters' persistence handles the first case; the new `location.hash`
+  fallback handles the second.
+- Full pre-existing regression suite (dashboard, cross-share lazy loading,
+  relationship graph, the resizable panes, the non-UNC path fixes, the
+  false-prefix sort trap) still passes with zero errors on both build
+  paths after these changes.
+
+## [0.6.9] - Fixed: parallel mode misclassified rights as "Special" (much wider than first reported)
+
+### Fixed -- `Invoke-NTFSPermissionAudit.ps1` (bumped to 0.5.4)
+- **A second, separate parallel-mode bug**, unrelated to the group-expansion
+  fix in 0.5.3/0.6.6 (confirmed independently fixed -- a follow-up
+  comparison came back with zero deviations). Reported as "10 fewer 'Read &
+  Execute' rows, appearing in 'Special' instead" -- but the actual bug is
+  far broader: `Convert-RightsToFriendly`'s own `$script:RightsCombos`
+  (the lookup table of reference bit-patterns for Full Control/Modify/
+  Read & Execute/Read/Write) and `$script:SynchronizeFlag` (used to mask
+  out a bit that isn't meaningful for the comparison) were simply never
+  re-established inside the `-Parallel` worker scriptblock -- every OTHER
+  script-scoped variable the injected functions need (`$adAvailable`,
+  `$ExpandGroups`, the shared caches, etc.) is explicitly reconstructed
+  there via `$using:`, but these two were missed, precisely because they
+  aren't parameters like the others and so didn't fit the pattern the
+  existing code was already following.
+- The user's own key observation -- **the same gap at `-ThrottleLimit`
+  2, 5, 10, and 15** -- was the crucial clue: a genuine race produces a
+  *different* wrong answer each time depending on scheduling; a missing
+  initialization produces the *exact same* wrong answer every time,
+  regardless of how many workers there are. That ruled out a timing-
+  dependent cause and pointed straight at something structurally absent
+  in every parallel worker, unconditionally.
+- With both script-scoped variables `$null` inside a worker,
+  `Convert-RightsToFriendly`'s masking (`-band (-bnot $script:SynchronizeFlag)`)
+  silently degrades to a no-op instead of erroring, and its
+  `foreach ($comboName in $script:RightsCombos.Keys)` loop iterates *zero
+  times* (no exception; PowerShell just skips a `foreach` over `$null`).
+  The practical effect: **every single ACE processed by any parallel
+  worker fell through to the 'Special' catch-all**, regardless of its real
+  right -- not just Read & Execute. A scan's entire rights breakdown
+  (Full Control/Modify/Read & Execute/Read/Write) would show as
+  near-empty under any `-ThrottleLimit > 1`, with 'Special' absorbing
+  almost the whole edge count. The rows themselves were never lost --
+  correctly attributed to the right identity and folder throughout --
+  only their reported *right* was wrong.
+- **Confirmed directly**, not just reasoned about: reproduced the exact
+  mechanism with real `System.Security.AccessControl.FileSystemRights`
+  enum values (available cross-platform under PS7) -- with the two
+  variables correctly set, `ReadAndExecute` classifies correctly as
+  "Read & Execute" whether or not its `Synchronize` bit happens to be set
+  (the masking is what makes this robust to different tools/platforms
+  setting that bit differently -- relevant here given the reporting
+  folders sit on an NFS-backed NAS, where Unix-to-Windows ACL translation
+  doesn't always set that bit the way native Windows tooling does); with
+  the two variables `$null` (simulating the unfixed parallel worker),
+  the exact same input classifies as "Special" instead, every time, with
+  no exception thrown -- exactly matching the reported symptom.
+- Fixed by adding `$script:RightsCombos = $using:script:RightsCombos` and
+  `$script:SynchronizeFlag = $using:script:SynchronizeFlag` alongside the
+  existing `$adAvailable`/`$ExpandGroups`/etc. reconstruction at the top
+  of the `-Parallel` scriptblock.
+- Script still parses cleanly under PS7's own parser. A real end-to-end
+  test against actual concurrent `-Parallel` execution isn't possible in
+  this project's dev environment (no Windows host, no real filesystem
+  under real load) -- the confirmation above reproduces the exact
+  mechanism against real .NET rights values, which is the strongest
+  verification available here, but **field verification is still the
+  next step**: re-run the same `-ThrottleLimit` comparison and confirm
+  the full rights distribution (not just Read & Execute) now matches
+  between single- and multi-threaded runs.
+
 ## [0.6.8] - Resizable Tree/Graph vs. permissions panes
 
 ### Added
