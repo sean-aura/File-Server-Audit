@@ -2,6 +2,60 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.8] - Resizable Tree/Graph vs. permissions panes
+
+### Added
+- **A draggable horizontal splitter** between the Tree/Graph view and the
+  permissions list beneath it, on both a folder's and an identity's detail
+  view -- mirrors the existing sidebar splitter's own design (pointer
+  events, drag-to-resize, ratio persisted to `localStorage`), just dividing
+  vertical space instead of horizontal. The folder view and the identity
+  view each get their own independent ratio/storage key, so resizing one
+  doesn't move the other.
+- The relationship graph's `<svg>` already used a `viewBox` (a scalable
+  coordinate system) rather than fixed pixel dimensions, so it scales
+  correctly to whatever height the new splitter gives it with no changes
+  needed to the actual radial-layout computation -- only the CSS sizing
+  (`height:520px` -> `flex:1`) needed to change for the graph, tree, and
+  permissions containers alike.
+- `renderTable` (the identity view's flat, sortable permissions table)
+  gained its own scrollable body wrapper, since it previously had no
+  internal scroll container at all and relied entirely on the outer
+  content pane's own scroll.
+
+### Design note
+- `#content` normally scrolls as a whole (the dashboard, quick-filter
+  lists, the scan-errors detail view all rely on that). The new internal
+  split needed a fixed height budget to divide between its two panes
+  instead, so a `content-split` class toggles between the two modes:
+  added by `renderFolder`/`renderIdentity` (the two views with the new
+  split), removed by `renderSummaryView`/`showScanErrorsDetail` (every
+  other view, so the class never lingers from a previous folder/identity
+  selection into an unrelated view).
+
+### Verified
+- New jsdom test suite (`test_resize_panes.js`) confirms: the split-pane
+  DOM structure is present with the tree/graph inside the top pane and the
+  permissions list inside the bottom pane; the default 55/45 ratio applies
+  on first render; simulating a drag on the new splitter correctly updates
+  both panes' flex ratios in real time; the folder view and identity view
+  use distinct, independent storage keys; the `content-split` class is
+  present on folder/identity views and absent on the dashboard and scan-
+  errors views. Full pre-existing regression suite (dashboard, cross-share
+  lazy loading, relationship graph, the false-prefix sort trap, the
+  gap-bridging virtual nodes, non-UNC paths) still passes with zero errors.
+- **One thing that could not be verified in this project's dev environment,
+  worth knowing about rather than treating as broken**: jsdom deliberately
+  throws when `localStorage` is accessed under a `file://` origin ("not
+  available for opaque origins"), which the existing try/catch (same
+  pattern the sidebar splitter already uses) correctly swallows -- the
+  drag-resize itself works regardless, but the "remember the ratio across
+  reloads" persistence couldn't be exercised here. Real desktop browsers
+  are generally more permissive about `file://` `localStorage` than jsdom's
+  strict interpretation, matching the sidebar splitter's own already-
+  accepted behavior; this isn't a regression, just an existing, shared
+  limitation of testing a `file://`-only tool outside a real browser.
+
 ## [0.6.7] - Root-caused the WSL CRLF corruption to git's own core.autocrlf
 
 ### Added

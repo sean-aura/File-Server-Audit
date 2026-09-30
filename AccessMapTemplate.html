@@ -41,6 +41,22 @@
   .badge.broken { background:var(--warn); color:#000; }
   .listMore { padding:8px 10px; color:var(--muted); font-size:11px; font-style:italic; }
   #content { flex:1; overflow-y:auto; padding:16px; min-width:0; }
+  /* Folder/identity views (Tree-or-Graph + a permissions list below it) use an
+     internal resizable split instead of #content's own outer scroll -- each
+     pane scrolls itself, so the two share a fixed height budget the splitter
+     can actually divide between them. Every other view (dashboard, quick-
+     filter lists, welcome screen) keeps the plain #content scroll above. */
+  #content.content-split { display:flex; flex-direction:column; overflow:hidden; }
+  .splitPanes { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .splitPaneTop, .splitPaneBottom { min-height:60px; overflow:hidden; display:flex; flex-direction:column; }
+  .paneSplitter { height:7px; flex-shrink:0; cursor:row-resize; background:var(--border); touch-action:none; margin:6px 0; border-radius:3px; }
+  .paneSplitter:hover, .paneSplitter.dragging { background:var(--accent); }
+  @media (max-width: 760px) {
+    .splitPanes { flex:none; }
+    .splitPaneTop, .splitPaneBottom { flex:none !important; min-height:0; overflow:visible; }
+    .paneSplitter { display:none; }
+    #content.content-split { overflow-y:auto; }
+  }
   #welcome { color:var(--muted); max-width:600px; }
   #welcome ul { line-height:1.8; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:14px 16px; margin-bottom:16px; }
@@ -53,13 +69,13 @@
   .crumbSep { color:var(--muted); margin:0 5px; font-weight:400; }
   .card .field { display:inline-block; min-width:220px; margin:2px 18px 2px 0; font-size:13px; }
   .card .field b { color:var(--muted); font-weight:500; }
-  .treeWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; }
-  .treeToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:6px; }
+  .treeWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; flex:1; min-height:0; display:flex; flex-direction:column; }
+  .treeToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:6px; flex-shrink:0; }
   .treeToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
   .depthBtn { padding:4px 9px; font-size:11px; }
   .depthBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
   .treeNote { font-size:11px; color:var(--muted); padding:4px 8px; }
-  .treeHost { max-height:520px; overflow-y:auto; padding:4px 6px; }
+  .treeHost { flex:1; min-height:0; overflow-y:auto; padding:4px 6px; }
   .treeNode { }
   .treeRow { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:4px; cursor:pointer; font-size:13px; }
   .treeRow:hover { background:var(--panel2); }
@@ -74,8 +90,8 @@
   .detailTabs { display:flex; gap:4px; margin-bottom:8px; }
   .detailTabBtn { padding:6px 14px; font-size:12px; }
   .detailTabBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; position:relative; }
-  .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; }
+  .graphWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:16px; position:relative; flex:1; min-height:0; display:flex; flex-direction:column; }
+  .graphToolbar { display:flex; align-items:center; gap:14px; padding:2px 6px 8px; flex-wrap:wrap; flex-shrink:0; }
   .graphToolbar .groupLabel { font-size:11px; color:var(--muted); margin-right:2px; }
   .graphLegendToggle { position:absolute; right:14px; bottom:14px; width:26px; height:26px; border-radius:50%; background:var(--panel2); border:1px solid var(--border); color:var(--muted); font-size:14px; font-weight:600; font-style:italic; font-family:Georgia,serif; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:5; }
   .graphLegendToggle:hover { color:var(--text); border-color:var(--muted); }
@@ -89,7 +105,7 @@
   .graphLegendDot { width:9px; height:9px; border-radius:50%; background:#ffb454; border:1px solid #000; flex-shrink:0; }
   .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
   .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
-  svg.graph { width:100%; height:520px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
+  svg.graph { width:100%; flex:1; min-height:200px; display:block; background:#15191f; border-radius:4px; touch-action:none; }
   svg.graph text { fill:var(--text); font-size:11px; font-family:inherit; pointer-events:none; }
   svg.graph .nodeGroup { cursor:grab; }
   svg.graph .nodeGroup:active { cursor:grabbing; }
@@ -140,7 +156,9 @@
   table.datatable td { padding:5px 8px; border-bottom:1px solid #22272e; }
   table.datatable tr.rowclick { cursor:pointer; }
   table.datatable tr.rowclick:hover td { background:var(--panel2); }
-  .tableToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .tableToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-shrink:0; }
+  .tableWrap { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .tableBody { flex:1; min-height:0; overflow:auto; }
   .tableToolbar input { flex:1; padding:6px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
   .pill { padding:2px 6px; border-radius:3px; font-size:10px; }
   .pill.inherited { background:#2c333d; color:var(--muted); }
@@ -175,11 +193,11 @@
 
   /* Nested ACL list (a folder's identities, with group members collapsible
      underneath the group instead of flattened alongside it) */
-  .aclWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:10px; margin-bottom:16px; }
-  .aclSummary { font-size:12px; color:var(--muted); padding:0 4px 8px; }
-  .aclToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .aclWrap { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:10px; margin-bottom:16px; flex:1; min-height:0; display:flex; flex-direction:column; }
+  .aclSummary { font-size:12px; color:var(--muted); padding:0 4px 8px; flex-shrink:0; }
+  .aclToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-shrink:0; }
   .aclToolbar input { flex:1; padding:6px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
-  .aclHost { max-height:520px; overflow-y:auto; }
+  .aclHost { flex:1; min-height:0; overflow-y:auto; }
   .aclRow { display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:4px; cursor:pointer; font-size:13px; }
   .aclRow:hover { background:var(--panel2); }
   .aclRow .treeToggle { display:inline-block; width:14px; text-align:center; color:var(--muted); flex-shrink:0; }
@@ -1428,6 +1446,7 @@ function renderTable(rows, columns, opts) {
   // approach, and it silently stole focus after each character since the
   // browser can't keep focus on an element that no longer exists.
   const container = document.createElement('div');
+  container.className = 'tableWrap';
 
   const toolbar = document.createElement('div');
   toolbar.className = 'tableToolbar';
@@ -1439,6 +1458,10 @@ function renderTable(rows, columns, opts) {
   toolbar.appendChild(exportBtn);
   container.appendChild(toolbar);
 
+  const tableBody = document.createElement('div');
+  tableBody.className = 'tableBody';
+  container.appendChild(tableBody);
+
   const table = document.createElement('table');
   table.className = 'datatable';
   const thead = document.createElement('thead');
@@ -1447,11 +1470,11 @@ function renderTable(rows, columns, opts) {
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   table.appendChild(tbody);
-  container.appendChild(table);
+  tableBody.appendChild(table);
 
   const note = document.createElement('div');
   note.className = 'graphNote';
-  container.appendChild(note);
+  tableBody.appendChild(note);
 
   function computeFilteredSorted() {
     let filtered = rows;
@@ -1542,6 +1565,7 @@ function identityInfoCard(idn) {
 function renderIdentity(idx) {
   const idn = DATA.identities[idx];
   const content = document.getElementById('content');
+  content.classList.add('content-split');
   content.innerHTML = '';
   content.appendChild(identityInfoCard(idn));
 
@@ -1550,11 +1574,12 @@ function renderIdentity(idx) {
 
   content.appendChild(renderDetailTabs(() => renderIdentity(idx)));
 
+  let topContent;
   if (state.detailTab === 'graph') {
-    content.appendChild(renderRelationshipGraph('identity', idx, (key) => {
+    topContent = renderRelationshipGraph('identity', idx, (key) => {
       const kind = key[0], kidx = parseInt(key.slice(2), 10);
       if (kind === 'f') selectFolder(kidx, true); else selectIdentity(kidx, true);
-    }, () => renderIdentity(idx)));
+    }, () => renderIdentity(idx));
   } else {
     // Every distinct folder this identity directly accesses becomes its OWN tree
     // root -- each expands into its own subfolder structure independently, with
@@ -1567,12 +1592,12 @@ function renderIdentity(idx) {
     const rootFolderIndices = computeTopmostRoots(allAccessedFolders)
       .sort((a, b) => state.sortDir * cmpText(DATA.folders[a].path, DATA.folders[b].path));
 
-    content.appendChild(renderFolderTreeView(
+    topContent = renderFolderTreeView(
       rootFolderIndices,
       (folderIdx) => selectFolder(folderIdx, true),
       null, // no single "selected" folder highlight makes sense from an identity view with multiple roots
       () => renderIdentity(idx)
-    ));
+    );
   }
 
   const columns = [
@@ -1583,12 +1608,12 @@ function renderIdentity(idx) {
     { key: 'deny', label: 'Deny', get: r => r.e[5] ? 'Yes' : 'No' },
     { key: 'via', label: 'Granted via group', get: r => r.e[6] >= 0 ? DATA.identities[r.e[6]].name : '' }
   ];
-  const tableHost = document.createElement('div');
-  tableHost.appendChild(renderTable(allRows, columns, {
+  const bottomContent = renderTable(allRows, columns, {
     filename: `access_${(idn.name||'identity').replace(/[^a-z0-9]+/gi,'_')}.csv`,
     onRowClick: (r) => selectFolder(r.e[0], true)
-  }));
-  content.appendChild(tableHost);
+  });
+
+  content.appendChild(makeResizableSplitPanes(topContent, bottomContent, 'accessMapIdentityPaneRatio', 0.55));
 }
 
 /* -------------------------------- Folder view -------------------------------- */
@@ -1849,26 +1874,27 @@ function renderFolderAclList(folderIdx, onIdentityClick) {
 function renderFolder(idx) {
   const f = DATA.folders[idx];
   const content = document.getElementById('content');
+  content.classList.add('content-split');
   content.innerHTML = '';
   content.appendChild(folderInfoCard(f));
 
   content.appendChild(renderDetailTabs(() => renderFolder(idx)));
 
-  if (state.detailTab === 'graph') {
-    content.appendChild(renderRelationshipGraph('folder', idx, (key) => {
-      const kind = key[0], kidx = parseInt(key.slice(2), 10);
-      if (kind === 'f') selectFolder(kidx, true); else selectIdentity(kidx, true);
-    }, () => renderFolder(idx)));
-  } else {
-    content.appendChild(renderFolderTreeView(
-      [idx],
-      (folderIdx) => selectFolder(folderIdx, true),
-      idx,
-      () => renderFolder(idx)
-    ));
-  }
+  const topContent = state.detailTab === 'graph'
+    ? renderRelationshipGraph('folder', idx, (key) => {
+        const kind = key[0], kidx = parseInt(key.slice(2), 10);
+        if (kind === 'f') selectFolder(kidx, true); else selectIdentity(kidx, true);
+      }, () => renderFolder(idx))
+    : renderFolderTreeView(
+        [idx],
+        (folderIdx) => selectFolder(folderIdx, true),
+        idx,
+        () => renderFolder(idx)
+      );
 
-  content.appendChild(renderFolderAclList(idx, (identIdx) => selectIdentity(identIdx, true)));
+  const bottomContent = renderFolderAclList(idx, (identIdx) => selectIdentity(identIdx, true));
+
+  content.appendChild(makeResizableSplitPanes(topContent, bottomContent, 'accessMapFolderPaneRatio', 0.55));
 }
 
 /* -------------------------------- Quick filters ------------------------------ */
@@ -2109,6 +2135,7 @@ function filterToBroadGrantFolders() {
 
 function showScanErrorsDetail() {
   const content = document.getElementById('content');
+  content.classList.remove('content-split');
   content.innerHTML = '';
   const card = document.createElement('div');
   card.className = 'summarySection';
@@ -2183,6 +2210,7 @@ function renderAbuseReferenceTable() {
 function renderSummaryView() {
   state.selected = null;
   const content = document.getElementById('content');
+  content.classList.remove('content-split');
   content.innerHTML = '';
 
   if (DATA.scanComplete === false || (DATA.truncatedRowsDropped || 0) > 0) {
@@ -2391,6 +2419,72 @@ function initSplitter() {
   splitter.addEventListener('pointerup', stopDrag);
   splitter.addEventListener('pointercancel', stopDrag);
   splitter.addEventListener('lostpointercapture', stopDrag);
+}
+
+function makeResizableSplitPanes(topContent, bottomContent, storageKey, defaultTopRatio) {
+  // Stacks topContent/bottomContent with a draggable horizontal splitter
+  // between them, dividing whatever height the caller's own container ends
+  // up with (via flex -- see the .splitPanes/.splitPaneTop/.splitPaneBottom
+  // CSS) rather than a fixed pixel split, so it still works however tall
+  // the viewport happens to be. The ratio persists per storageKey (folder
+  // Tree/Graph vs. permissions gets its own key, separate from identity's,
+  // so a preference set on one doesn't unexpectedly move the other).
+  const wrap = document.createElement('div');
+  wrap.className = 'splitPanes';
+
+  const topPane = document.createElement('div');
+  topPane.className = 'splitPaneTop';
+  topPane.appendChild(topContent);
+
+  const splitter = document.createElement('div');
+  splitter.className = 'paneSplitter';
+  splitter.title = 'Drag to resize';
+
+  const bottomPane = document.createElement('div');
+  bottomPane.className = 'splitPaneBottom';
+  bottomPane.appendChild(bottomContent);
+
+  wrap.appendChild(topPane);
+  wrap.appendChild(splitter);
+  wrap.appendChild(bottomPane);
+
+  let ratio = defaultTopRatio;
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) { const n = parseFloat(saved); if (!isNaN(n) && n > 0.1 && n < 0.9) ratio = n; }
+  } catch (e) { /* ignore -- falls back to defaultTopRatio */ }
+  const applyRatio = (r) => {
+    topPane.style.flex = `${r} 1 0`;
+    bottomPane.style.flex = `${1 - r} 1 0`;
+  };
+  applyRatio(ratio);
+
+  let dragging = false;
+  splitter.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    splitter.classList.add('dragging');
+    try { splitter.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  });
+  splitter.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = wrap.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    let r = (e.clientY - rect.top) / rect.height;
+    r = Math.max(0.15, Math.min(0.85, r));
+    ratio = r;
+    applyRatio(r);
+  });
+  function stopDrag() {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('dragging');
+    try { localStorage.setItem(storageKey, String(ratio)); } catch (e) { /* ignore -- resize just won't persist across reloads */ }
+  }
+  splitter.addEventListener('pointerup', stopDrag);
+  splitter.addEventListener('pointercancel', stopDrag);
+  splitter.addEventListener('lostpointercapture', stopDrag);
+
+  return wrap;
 }
 
 /* ----------------------------------- Init ------------------------------------ */
