@@ -2,6 +2,84 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.4] - Full audit and fix of hardcoded colors that ignored light mode
+
+The 0.7.2 light-mode fix only caught four instances found via a narrow
+search (specific `background:#`/`color:#`/`fill:#`/`stroke:#` property
+patterns). Reported again as "broken inheritance / observations AU/NZ/US
+badges, and tree/graph rights colors are still dark" -- this time audited
+every single hex color literal in the file (`grep -noE "#[0-9a-fA-F]{3,8}"`,
+checked line by line, not just a few property-name patterns), rather than
+guessing at which ones might be the specific complaint.
+
+### Fixed
+- **`.disclaimerBanner`/`.incompleteBanner`** (the Observations section's
+  own disclaimer, and the "scan incomplete" banner) -- hardcoded dark
+  backgrounds regardless of theme. New `--warn-bg`/`--bad-bg`/`--bad-text`
+  variables, themed per mode.
+- **`.regionPill-AU/NZ/US/EU/Intl`** -- exactly the "AU badges" in the
+  report. Hardcoded dark navy/green/purple/amber backgrounds with light
+  text, designed for a dark canvas only; new `--pill-*` variables give each
+  a proper light-mode pastel-background/dark-text pairing instead of
+  reusing the dark-mode colors unchanged.
+- **`.pill.explicit`** (the ACL list's inherited/explicit/deny indicators)
+  -- hardcoded dark green, now themed via a new `--good-bg` variable.
+- **Four repeated hardcoded border colors** (`#22272e`, across table and
+  row separators in the summary/abuse/scan-errors tables) -- switched to
+  `var(--border)`.
+- **The graph's own rights/identity-type colors** (`EDGE_COLORS`/
+  `TYPE_COLORS`) -- very likely the main "tree/graph permissions Special/
+  Read/Write" complaint. These were flat constants tuned for a
+  permanently-dark graph canvas; now theme-aware functions
+  (`getEdgeColors()`/`getTypeColors()`) with genuinely different light-mode
+  variants, since a couple of the dark-mode colors (the light purple used
+  for Group/membership especially) were close to unreadable against the
+  now-theme-aware graph background introduced in 0.7.2.
+- **A second, independent copy of the same node/edge colors** for folder
+  nodes and "Member of" edges specifically, missed in the first pass
+  through that same function.
+- **The graph's own legend panel** had its own separate hardcoded copies
+  of these same colors (center node, folder, solid/dashed line examples) --
+  fixed to match the themed versions above rather than silently
+  contradicting them.
+- **The flagged-node indicator dot** in the graph (the small amber ring
+  marking a broken/disabled/dormant node) -- same fix.
+- **A genuinely serious one, not just a visual mismatch**: the Summary
+  dashboard's rights-distribution donut chart had a hardcoded light-colored
+  center-text fill. In light mode this was light text on a light
+  background -- actually unreadable, not merely "looks dark." Its
+  background-ring stroke was also hardcoded dark. Both fixed.
+- Two purely decorative elements (`.graphLegendDot`, `svg.graph
+  .centerCircle`) switched to `var(--warn)` directly, since those are real
+  stylesheet rules rather than inline SVG attributes, where `var()`
+  resolution is unambiguous.
+- **Removed a dead, unused color constant** (`IDENTITY_TYPE_COLORS`) found
+  during the audit -- never actually referenced anywhere in the file, so
+  it wasn't contributing to any visible bug, but left as-is it was a stale
+  hardcoded-color trap for a future maintainer to accidentally wire up.
+
+### Verified as intentional, left unchanged
+- A handful of fixed-contrast text colors (white/black text on `var(--bad)`/
+  `var(--warn)`/`var(--accent)` badge and button backgrounds) were checked
+  individually and confirmed to have adequate contrast in both themes,
+  since none of those three variables becomes light enough in light mode
+  for the fixed text color to fail -- left alone rather than adding
+  complexity for no visible benefit.
+- A few pure-black SVG strokes/borders on decorative elements (node
+  circles, legend dots) are a deliberate "always dark outline for
+  definition" choice, not a theme bug -- confirmed by checking each one's
+  actual visual role rather than assuming every hex literal is broken.
+
+### Verified
+- Directly tested `getEdgeColors()`/`getTypeColors()`/`effectiveThemeIsLight()`
+  return the correct palette in both the default (dark) and toggled (light)
+  states, and that the rendered graph's actual node `fill` attributes and
+  the donut chart's actual text `fill` attribute reflect the light-mode
+  palette once toggled -- not just that the functions exist, but that the
+  real rendered output uses them. Full pre-existing regression suite still
+  passes with zero errors on both build paths, which still produce
+  byte-identical `AccessMap.html` from the same template.
+
 ## [0.7.3] - Per-folder file counts and broken-inheritance flag, built from existing data
 
 No scanner change, and fully consumable from data already captured by any

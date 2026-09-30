@@ -13,6 +13,12 @@
     --bg: #111418; --panel: #1a1f26; --panel2: #20262f; --border: #2c333d;
     --text: #e6e9ee; --muted: #9aa4b2; --accent: #4da3ff; --warn: #ffb454; --bad: #ff5d5d;
     --good: #57d38c; --selected-bg: #20304a;
+    --warn-bg: #2a2410; --bad-bg: #3a1a1a; --bad-text: #ff9d9d; --good-bg: #2c4a3d;
+    --pill-au-bg: #003a5c; --pill-au-text: #7dd3fc;
+    --pill-nz-bg: #1a2e1a; --pill-nz-text: #86efac;
+    --pill-us-bg: #2e1a3a; --pill-us-text: #d8b4fe;
+    --pill-eu-bg: #2e2a1a; --pill-eu-text: #fde68a;
+    --pill-intl-bg: #2c333d;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme]) {
@@ -21,12 +27,24 @@
       --bg: #eef0f2; --panel: #f7f7f5; --panel2: #ececea; --border: #d8dce2;
       --text: #1a1f26; --muted: #5b6472; --accent: #1a73e8; --warn: #b8720a; --bad: #d53c3c;
       --good: #1e8e4f; --selected-bg: #d7e6fb;
+      --warn-bg: #fdf1d9; --bad-bg: #fbe4e2; --bad-text: #a32e20; --good-bg: #dcf3e6;
+      --pill-au-bg: #d9edfb; --pill-au-text: #0a4a72;
+      --pill-nz-bg: #dff3e2; --pill-nz-text: #146c33;
+      --pill-us-bg: #f0e3fa; --pill-us-text: #5a2a82;
+      --pill-eu-bg: #faf0d4; --pill-eu-text: #7a5c00;
+      --pill-intl-bg: #e4e7eb;
     }
   }
   :root[data-theme="light"] {
     --bg: #eef0f2; --panel: #f7f7f5; --panel2: #ececea; --border: #d8dce2;
     --text: #1a1f26; --muted: #5b6472; --accent: #1a73e8; --warn: #b8720a; --bad: #d53c3c;
     --good: #1e8e4f; --selected-bg: #d7e6fb;
+    --warn-bg: #fdf1d9; --bad-bg: #fbe4e2; --bad-text: #a32e20; --good-bg: #dcf3e6;
+    --pill-au-bg: #d9edfb; --pill-au-text: #0a4a72;
+    --pill-nz-bg: #dff3e2; --pill-nz-text: #146c33;
+    --pill-us-bg: #f0e3fa; --pill-us-text: #5a2a82;
+    --pill-eu-bg: #faf0d4; --pill-eu-text: #7a5c00;
+    --pill-intl-bg: #e4e7eb;
   }
   * { box-sizing: border-box; }
   body { margin:0; font-family: Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); }
@@ -134,7 +152,7 @@
   .graphLegendSwatch { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
   .graphLegendLine { width:16px; height:0; border-top:3px solid; flex-shrink:0; }
   .graphLegendLine.dashed { border-top-style:dashed; }
-  .graphLegendDot { width:9px; height:9px; border-radius:50%; background:#ffb454; border:1px solid #000; flex-shrink:0; }
+  .graphLegendDot { width:9px; height:9px; border-radius:50%; background:var(--warn); border:1px solid #000; flex-shrink:0; }
   .zoomBtn { padding:4px 9px; font-size:13px; line-height:1; }
   .graphNote { font-size:11px; color:var(--muted); padding:4px 8px; }
   svg.graph { width:100%; flex:1; min-height:200px; display:block; background:var(--panel2); border-radius:4px; touch-action:none; }
@@ -142,7 +160,7 @@
   svg.graph .nodeGroup { cursor:grab; }
   svg.graph .nodeGroup:active { cursor:grabbing; }
   svg.graph .nodeCircle { stroke:#000; stroke-width:1; }
-  svg.graph .centerCircle { fill:#ffb454; }
+  svg.graph .centerCircle { fill:var(--warn); }
   svg.graph .nodeLabel { font-weight:500; }
   svg.graph .nodeSubLabel { fill:var(--muted); font-size:9px; }
   svg.graph .edgeLabel { fill:var(--muted); font-size:9px; }
@@ -155,7 +173,7 @@
   .statCard.clickable:hover { background:var(--panel2); }
   .statCard.warn .bigNum { color:var(--warn); }
   .statCard.bad .bigNum { color:var(--bad); }
-  .breakdownRow { display:flex; justify-content:space-between; font-size:13px; padding:4px 0; border-bottom:1px solid #22272e; }
+  .breakdownRow { display:flex; justify-content:space-between; font-size:13px; padding:4px 0; border-bottom:1px solid var(--border); }
   .breakdownRow:last-child { border-bottom:none; }
   .summarySection { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px; }
   .summarySection h2 { font-size:14px; margin:0 0 12px; }
@@ -163,8 +181,8 @@
   .chartLegend { font-size:12px; }
   .chartLegend .legendRow { display:flex; align-items:center; gap:8px; padding:3px 0; }
   .legendSwatch { width:11px; height:11px; border-radius:2px; flex-shrink:0; }
-  .disclaimerBanner { background:#2a2410; border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:10px 14px; font-size:12px; margin-bottom:16px; }
-  .incompleteBanner { background:#3a1a1a; border:1px solid var(--bad); color:#ff9d9d; border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; font-weight:500; }
+  .disclaimerBanner { background:var(--warn-bg); border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:10px 14px; font-size:12px; margin-bottom:16px; }
+  .incompleteBanner { background:var(--bad-bg); border:1px solid var(--bad); color:var(--bad-text); border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; font-weight:500; }
   .infoBanner { background:var(--panel2); border:1px solid var(--border); color:var(--muted); border-radius:6px; padding:12px 16px; font-size:13px; margin-bottom:18px; }
   .headerIncompleteBadge { background:var(--bad); color:#fff; font-size:11px; font-weight:600; padding:3px 9px; border-radius:10px; margin-left:6px; }
   .obsCard { border-left:3px solid var(--warn); background:var(--panel2); border-radius:0 6px 6px 0; padding:10px 14px; margin-bottom:10px; }
@@ -173,21 +191,21 @@
   .obsCard .obsFrameworks { font-size:11px; color:var(--text); }
   .guidanceRow { display:flex; align-items:flex-start; gap:8px; margin-bottom:5px; }
   .regionPill { flex-shrink:0; width:34px; text-align:center; font-size:10px; font-weight:600; padding:1px 0; border-radius:3px; }
-  .regionPill-AU { background:#003a5c; color:#7dd3fc; }
-  .regionPill-NZ { background:#1a2e1a; color:#86efac; }
-  .regionPill-US { background:#2e1a3a; color:#d8b4fe; }
-  .regionPill-EU { background:#2e2a1a; color:#fde68a; }
-  .regionPill-Intl { background:#2c333d; color:var(--muted); }
+  .regionPill-AU { background:var(--pill-au-bg); color:var(--pill-au-text); }
+  .regionPill-NZ { background:var(--pill-nz-bg); color:var(--pill-nz-text); }
+  .regionPill-US { background:var(--pill-us-bg); color:var(--pill-us-text); }
+  .regionPill-EU { background:var(--pill-eu-bg); color:var(--pill-eu-text); }
+  .regionPill-Intl { background:var(--pill-intl-bg); color:var(--muted); }
   .abuseTable { width:100%; border-collapse:collapse; font-size:12px; }
-  .abuseTable th, .abuseTable td { text-align:left; padding:5px 8px; border-bottom:1px solid #22272e; vertical-align:top; }
+  .abuseTable th, .abuseTable td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
   .abuseTable th { color:var(--muted); font-weight:500; }
   .scanErrorsTable { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
-  .scanErrorsTable th, .scanErrorsTable td { text-align:left; padding:5px 8px; border-bottom:1px solid #22272e; }
+  .scanErrorsTable th, .scanErrorsTable td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border); }
   .scanErrorsTable th { color:var(--muted); font-weight:500; }
   table.datatable { width:100%; border-collapse:collapse; font-size:12px; }
   table.datatable th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); cursor:pointer; color:var(--muted); position:sticky; top:0; background:var(--panel); user-select:none; }
   table.datatable th:hover { color:var(--text); }
-  table.datatable td { padding:5px 8px; border-bottom:1px solid #22272e; }
+  table.datatable td { padding:5px 8px; border-bottom:1px solid var(--border); }
   table.datatable tr.rowclick { cursor:pointer; }
   table.datatable tr.rowclick:hover td { background:var(--panel2); }
   .tableToolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-shrink:0; }
@@ -196,7 +214,7 @@
   .tableToolbar input { flex:1; padding:6px; border-radius:4px; border:1px solid var(--border); background:var(--panel2); color:var(--text); }
   .pill { padding:2px 6px; border-radius:3px; font-size:10px; }
   .pill.inherited { background:var(--panel2); color:var(--muted); }
-  .pill.explicit { background:#2c4a3d; color:var(--good); }
+  .pill.explicit { background:var(--good-bg); color:var(--good); }
   .pill.deny { background:var(--bad); color:#fff; }
   #backBtn:disabled { opacity:0.4; cursor:default; }
   footer { padding:6px 16px; font-size:11px; color:var(--muted); border-top:1px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -423,12 +441,29 @@ const RIGHTS_LABELS = ['Full Control', 'Modify', 'Read & Execute', 'Read', 'Writ
 // Higher = more "interesting" to show first when a node has more neighbors
 // than MAX_EDGES_PER_NODE. Explicit (non-inherited) always outweighs rights level.
 const RIGHTS_WEIGHT = [100, 90, 50, 10, 60, 85];
-const EDGE_COLORS   = ['#ff5d5d', '#ffb454', '#57d3d3', '#7d8a99', '#4da3ff', '#c084fc'];
+// Used as swatch/stroke colors (graph edges, legend dots, the dashboard's
+// rights donut chart) against the graph/panel background, never as text
+// sitting on top of them -- so the one real risk is a color simply being
+// too washed-out against whichever theme's background is currently active,
+// not text-on-color contrast. The dark-mode set was tuned against a dark
+// canvas; a couple of those (the light purple especially) read as too
+// pale once the graph background itself became theme-aware rather than
+// permanently dark (see svg.graph's own fix) -- these functions pick a
+// deliberately darker/more saturated variant for light mode instead of
+// reusing the same six colors unchanged in both themes.
+const EDGE_COLORS_DARK  = ['#ff5d5d', '#ffb454', '#57d3d3', '#7d8a99', '#4da3ff', '#c084fc'];
+const EDGE_COLORS_LIGHT = ['#d53c3c', '#b8720a', '#0d7373', '#4a5568', '#1a73e8', '#7c3aed'];
+function getEdgeColors() { return effectiveThemeIsLight() ? EDGE_COLORS_LIGHT : EDGE_COLORS_DARK; }
 
-const TYPE_COLORS = {
+const TYPE_COLORS_DARK = {
   User: '#4da3ff', Group: '#c084fc', Computer: '#7d8a99',
   'Well-known / Local': '#5a6472', Unresolved: '#5a6472'
 };
+const TYPE_COLORS_LIGHT = {
+  User: '#1a73e8', Group: '#7c3aed', Computer: '#4a5568',
+  'Well-known / Local': '#6b7280', Unresolved: '#6b7280'
+};
+function getTypeColors() { return effectiveThemeIsLight() ? TYPE_COLORS_LIGHT : TYPE_COLORS_DARK; }
 
 const DORMANT_DAYS = 90;
 const TREE_CHILD_CAP = MAX_EDGES_PER_NODE; // max children shown per folder before "+N more"
@@ -1225,10 +1260,10 @@ function nodeDisplayInfo(key) {
   const kind = key[0], idx = parseInt(key.slice(2), 10);
   if (kind === 'f') {
     const f = DATA.folders[idx];
-    return { label: lastPathSegment(f.path), full: f.path, color: '#57d3d3', flagged: f.broken };
+    return { label: lastPathSegment(f.path), full: f.path, color: effectiveThemeIsLight() ? '#0d7373' : '#57d3d3', flagged: f.broken };
   }
   const idn = DATA.identities[idx];
-  return { label: idn.name, full: idn.name, color: TYPE_COLORS[idn.type] || '#7d8a99', flagged: idn.flagDisabled || idn.flagDormant || idn.flagLocked };
+  return { label: idn.name, full: idn.name, color: getTypeColors()[idn.type] || (effectiveThemeIsLight() ? '#4a5568' : '#7d8a99'), flagged: idn.flagDisabled || idn.flagDormant || idn.flagLocked };
 }
 
 function edgeDisplayInfo(edgeInfo) {
@@ -1237,11 +1272,11 @@ function edgeDisplayInfo(edgeInfo) {
     const s = d.type === 'membership' ? 40 : ((d.e[3] ? 0 : 1000) + RIGHTS_WEIGHT[d.e[2]]);
     if (s > bestScore) { bestScore = s; best = d; }
   });
-  if (best.type === 'membership') return { label: 'Member of', color: '#c084fc', dashed: true };
+  if (best.type === 'membership') return { label: 'Member of', color: effectiveThemeIsLight() ? '#7c3aed' : '#c084fc', dashed: true };
   const e = best.e;
   let label = RIGHTS_LABELS[e[2]];
   if (e[5]) label = 'Deny ' + label;
-  return { label, color: EDGE_COLORS[e[2]], dashed: !!e[3] };
+  return { label, color: getEdgeColors()[e[2]], dashed: !!e[3] };
 }
 
 let graphRenderToken = 0;
@@ -1346,12 +1381,12 @@ function renderRelationshipGraphInner(g, positions, centerKey, onNavigate, onDep
     return row;
   }
   legendSection('Nodes', [
-    swatchRow('#ffb454', 'Center (current selection)'),
-    swatchRow('#57d3d3', 'Folder'),
-    swatchRow(TYPE_COLORS.User, 'User'),
-    swatchRow(TYPE_COLORS.Group, 'Group'),
-    swatchRow(TYPE_COLORS.Computer, 'Computer'),
-    swatchRow(TYPE_COLORS['Well-known / Local'], 'Well-known / Local / Unresolved')
+    swatchRow(effectiveThemeIsLight() ? '#b8720a' : '#ffb454', 'Center (current selection)'),
+    swatchRow(effectiveThemeIsLight() ? '#0d7373' : '#57d3d3', 'Folder'),
+    swatchRow(getTypeColors().User, 'User'),
+    swatchRow(getTypeColors().Group, 'Group'),
+    swatchRow(getTypeColors().Computer, 'Computer'),
+    swatchRow(getTypeColors()['Well-known / Local'], 'Well-known / Local / Unresolved')
   ]);
   const flagRow = document.createElement('div');
   flagRow.className = 'graphLegendRow';
@@ -1362,11 +1397,11 @@ function renderRelationshipGraphInner(g, positions, centerKey, onNavigate, onDep
   flagLbl.textContent = 'Broken inheritance (folder) / disabled, locked, or dormant (identity)';
   flagRow.appendChild(flagLbl);
   legendPanel.appendChild(flagRow);
-  legendSection('Access rights', RIGHTS_LABELS.map((label, i) => swatchRow(EDGE_COLORS[i], label)));
+  legendSection('Access rights', RIGHTS_LABELS.map((label, i) => swatchRow(getEdgeColors()[i], label)));
   legendSection('Lines', [
-    lineRow('#7d8a99', 'Solid = explicit access', false),
-    lineRow('#7d8a99', 'Dashed = inherited access', true),
-    lineRow('#c084fc', 'Dashed = group membership', true)
+    lineRow(effectiveThemeIsLight() ? '#4a5568' : '#7d8a99', 'Solid = explicit access', false),
+    lineRow(effectiveThemeIsLight() ? '#4a5568' : '#7d8a99', 'Dashed = inherited access', true),
+    lineRow(effectiveThemeIsLight() ? '#7c3aed' : '#c084fc', 'Dashed = group membership', true)
   ]);
   wrap.appendChild(legendPanel);
   legendToggle.onclick = () => {
@@ -1423,7 +1458,7 @@ function renderRelationshipGraphInner(g, positions, centerKey, onNavigate, onDep
     const group = svgEl('g', { class: 'nodeGroup', transform: `translate(${pos.x},${pos.y})`, 'data-key': key });
     group.appendChild(svgEl('circle', { class: 'nodeCircle' + (isCenter ? ' centerCircle' : ''), r, fill: isCenter ? undefined : info.color }));
     if (info.flagged && !isCenter) {
-      group.appendChild(svgEl('circle', { cx: r * 0.7, cy: -r * 0.7, r: 5, fill: '#ffb454', stroke: '#000', 'stroke-width': 0.5, class: 'flagRing' }));
+      group.appendChild(svgEl('circle', { cx: r * 0.7, cy: -r * 0.7, r: 5, fill: effectiveThemeIsLight() ? '#b8720a' : '#ffb454', stroke: '#000', 'stroke-width': 0.5, class: 'flagRing' }));
     }
     const nameLbl = svgEl('text', { class: 'nodeLabel', x: 0, y: r + 16, 'text-anchor': 'middle' });
     nameLbl.textContent = truncateLabel(info.label, 22);
@@ -2057,7 +2092,6 @@ function renderFolder(idx) {
 /* ------------------------------- Summary view --------------------------------- */
 
 const IDENTITY_TYPE_ORDER = ['User', 'Group', 'Computer', 'Well-known / Local', 'Unresolved'];
-const IDENTITY_TYPE_COLORS = { User: '#4da3ff', Group: '#c084fc', Computer: '#7d8a99', 'Well-known / Local': '#5a6472', Unresolved: '#ff5d5d' };
 
 function computeIdentityBreakdown() {
   const byType = {};
@@ -2114,7 +2148,7 @@ function renderDonutChart(segments, size) {
   const C = 2 * Math.PI * R;
   let offset = 0;
   const svg = svgEl('svg', { viewBox: `0 0 ${size} ${size}`, width: size, height: size });
-  svg.appendChild(svgEl('circle', { cx, cy, r: R, fill: 'none', stroke: '#20262f', 'stroke-width': strokeW }));
+  svg.appendChild(svgEl('circle', { cx, cy, r: R, fill: 'none', stroke: effectiveThemeIsLight() ? '#d8dce2' : '#20262f', 'stroke-width': strokeW }));
   segments.forEach(seg => {
     if (seg.count <= 0) return;
     const frac = seg.count / total;
@@ -2130,7 +2164,7 @@ function renderDonutChart(segments, size) {
     svg.appendChild(circle);
     offset += frac * C;
   });
-  const centerText = svgEl('text', { x: cx, y: cy, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': 15, fill: '#e6e9ee' });
+  const centerText = svgEl('text', { x: cx, y: cy, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': 15, fill: effectiveThemeIsLight() ? '#1a1f26' : '#e6e9ee' });
   centerText.textContent = String(realTotal);
   svg.appendChild(centerText);
   return svg;
@@ -2471,7 +2505,7 @@ function renderSummaryView() {
   const rightsSection = document.createElement('div');
   rightsSection.className = 'summarySection';
   rightsSection.innerHTML = '<h2>Access rights distribution</h2>';
-  const segments = RIGHTS_LABELS.map((label, i) => ({ label, count: rights[i], color: EDGE_COLORS[i] }));
+  const segments = RIGHTS_LABELS.map((label, i) => ({ label, count: rights[i], color: getEdgeColors()[i] }));
   rightsSection.appendChild(renderChartWithLegend(segments));
   content.appendChild(rightsSection);
 
