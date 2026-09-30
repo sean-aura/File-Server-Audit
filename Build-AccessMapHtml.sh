@@ -60,7 +60,7 @@
 #     only means a byte-diff between a PowerShell-built and a bash-built
 #     report from the same CSVs won't be empty, even though both are correct.
 
-SCRIPT_VERSION="0.7.2"
+SCRIPT_VERSION="0.7.3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 BUILD_STARTED_AT=$(date +%s)
 

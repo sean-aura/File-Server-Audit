@@ -8,7 +8,7 @@ interactive HTML report -- or three and a half, really: step 3
 same report from Linux/macOS/WSL, without needing PowerShell installed
 there at all. Works under both Windows PowerShell 5.1 and PowerShell 7+.
 
-Version 0.7.2. Licensed under the MIT License -- see [LICENSE](LICENSE).
+Version 0.7.3. Licensed under the MIT License -- see [LICENSE](LICENSE).
 
 **Nothing here requires DFS management access or a specific set of installed
 modules.** Every capability that depends on an optional module or elevated

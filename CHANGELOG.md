@@ -2,6 +2,72 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.3] - Per-folder file counts and broken-inheritance flag, built from existing data
+
+No scanner change, and fully consumable from data already captured by any
+past `-IncludeFiles` scan -- this is entirely new work in `Build-AccessMapHtml.ps1`/
+`Build-AccessMapHtml.sh`+`build.awk`/`AccessMapTemplate.html`, reading fields
+(`ObjectType`, `Path`, `InheritanceBrokenHere`) that have existed in
+`IdentityPermissions.csv` for a long time, well before this project's recent
+scanner changes. An existing report's CSVs don't need a re-scan to benefit.
+
+### Added -- `Build-AccessMapHtml.ps1` / `Build-AccessMapHtml.sh`+`build.awk`
+- File rows (`ObjectType: File`) were previously discarded entirely except
+  for one global counter used in a single informational message. They're
+  now also aggregated per folder: a `fileCount` and a
+  `filesBrokenInheritance` flag (true if *any* file directly in that folder
+  has broken inheritance), attached to that folder's own manifest entry.
+  Individual files still never become their own nodes, edges, or rows in
+  the interactive map -- only these two aggregate values attach to the
+  folder they belong to, matching the existing design reasoning already in
+  this code for why files were excluded from the graph in the first place.
+- A new `hasFileCounts` manifest flag (parallel to `hasFileMetadata`) marks
+  whether this scan captured file rows at all; a folder genuinely untouched
+  by any file row stays completely *absent* from `fileCount`/
+  `filesBrokenInheritance` rather than showing a misleading `0`/`false` --
+  the same "absence, not a zero value" distinction already used for
+  Created/Modified/Accessed.
+- Fixed a real ordering assumption in `Get-OrAdd-Folder`/`get_or_add_folder`:
+  a file's own row can be processed before its containing folder's own ACE
+  row creates that folder's manifest entry (this function is now also
+  called, with no timestamps to offer, purely to resolve a file's parent
+  folder for this aggregation). Previously, whichever call happened to
+  create the entry first was treated as authoritative for
+  Created/Modified/Accessed, with no way for a later call to fill in a
+  value the first one didn't have. Now any call can fill in whichever of
+  the three is still empty, regardless of which one runs first.
+- Deduplicates by file path before counting: a file with multiple ACE rows
+  (one per identity granted access) would otherwise inflate its folder's
+  file count by however many ACEs that one file has.
+- Verified against a synthetic dataset built specifically to exercise the
+  tricky cases: a file with two ACE rows (confirmed not double-counted), a
+  file row placed *before* its own folder's row in the CSV (confirmed the
+  ordering fix works), a folder with a genuinely broken-inheritance file
+  mixed with a clean one (confirmed the flag reflects "any", not "all"),
+  and a folder with no file rows at all (confirmed it stays absent, not
+  zero). Cross-checked the PS1 and bash/awk outputs as an exact match for
+  every case.
+
+### Added -- `AccessMapTemplate.html`
+- A folder's own page now shows "Files in this folder: N" and, when
+  applicable, a "File(s) with broken inheritance" badge -- alongside
+  Created/Modified/Accessed, gated on the new `hasFileCounts` flag rather
+  than bundled with the timestamp feature, since a scan could have one
+  capability without the other.
+- New header toggle, "Flag files w/ broken inheritance" (only shown when
+  `hasFileCounts` is true, matching how Aged folders is hidden otherwise):
+  off by default, so this doesn't clutter the sidebar list or tree view by
+  default. When on, folders with `filesBrokenInheritance` get a small
+  "files: broken inheritance" / "files: broken" badge in both the sidebar
+  list and the tree view (shared by both a folder's own page and an
+  identity's page, since both use the same tree-rendering function).
+  Toggling it re-renders whichever of those is currently on screen.
+
+### Verified
+- Full pre-existing regression suite still passes with zero errors on both
+  build paths after these changes, and both paths still produce
+  byte-identical `AccessMap.html` from the same template.
+
 ## [0.7.2] - UI polish: unified button style, light-mode fixes, build duration
 
 ### Fixed -- real light-mode readability bug

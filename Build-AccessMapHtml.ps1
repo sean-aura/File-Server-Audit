@@ -106,7 +106,7 @@
     # Then just double-click C:\Audit\Run1\AccessMap_<timestamp>\AccessMap.html
 
 .NOTES
-    Version: 0.7.2
+    Version: 0.7.3
 
     Minimum PowerShell 5.1. Requires IdentityPermissions.csv from a prior audit run;
     ADIdentityDetails.csv is optional but strongly recommended (without it, identity
@@ -132,7 +132,7 @@ param(
     [switch]$Force
 )
 
-$ScriptVersion = '0.7.2'
+$ScriptVersion = '0.7.3'
 
 $ErrorActionPreference = 'Stop'
 $script:BuildStartedAt = Get-Date
@@ -595,7 +595,20 @@ $shareFolderCounts = @{}   # share key -> distinct folder count
 
 function Get-OrAdd-Folder {
     param([string]$Path, [string]$Created = $null, [string]$Modified = $null, [string]$Accessed = $null)
-    if ($folderLookup.ContainsKey($Path)) { return $folderLookup[$Path] }
+    if ($folderLookup.ContainsKey($Path)) {
+        # A file row for this folder can be processed before the folder's own
+        # ACE row creates this entry (this function is also called, with no
+        # timestamps to offer, purely to resolve a file's parent folder for
+        # the file-count aggregation below) -- or the reverse. Either order
+        # is possible depending on scan/processing order, so fill in
+        # whichever of these three is still missing rather than assuming
+        # whichever call happens to run first is the authoritative one.
+        $existingIdx = $folderLookup[$Path]
+        if ($Created -and -not $folderIndex[$existingIdx].created) { $folderIndex[$existingIdx].created = $Created }
+        if ($Modified -and -not $folderIndex[$existingIdx].modified) { $folderIndex[$existingIdx].modified = $Modified }
+        if ($Accessed -and -not $folderIndex[$existingIdx].accessed) { $folderIndex[$existingIdx].accessed = $Accessed }
+        return $existingIdx
+    }
     $shareKey = Get-ShareKeyFromPath -Path $Path
     if (-not $shareFolderCounts.ContainsKey($shareKey)) {
         $shareFolderCounts[$shareKey] = 0
@@ -623,6 +636,23 @@ $rightsDistribution = New-Object 'int[]' 6
 $broadPrincipalFolders = New-Object System.Collections.Generic.HashSet[int]
 $totalEdgeCount = 0
 $fileRowsExcluded = 0
+# Per-folder aggregates derived from file rows (ObjectType: File), which
+# otherwise get skipped entirely below -- see that skip's own comment for why
+# a file's OWN path is never fed through Get-OrAdd-Folder directly. Keyed by
+# folder index; both default to "not seen" ($folderFileCount simply has no
+# key yet) rather than a pre-filled 0/false, so a folder that genuinely had
+# zero files scanned stays indistinguishable from one this scan never
+# touched with -IncludeFiles at all -- the client-side hasFileCounts flag
+# (parallel to hasFileMetadata) is what actually tells those two apart, not
+# a per-folder value of 0.
+$folderFileCount = @{}
+$folderFilesBroken = New-Object System.Collections.Generic.HashSet[int]
+$hasFileCounts = $false
+# A file can have multiple ACE rows -- one per identity granted access --
+# all sharing the same Path. Without this, a file with 3 ACEs would inflate
+# its folder's file count by 3x; only the first row seen for a given file
+# path actually counts it.
+$seenFilePaths = New-Object System.Collections.Generic.HashSet[string]
 # Created/Modified/Accessed are optional columns added in Invoke-NTFSPermissionAudit.ps1
 # 0.5.5 -- an older CSV (0.5.4 and earlier) simply won't have them. Accessing a
 # genuinely missing key on an Import-CsvRobust row via dot-notation returns $null
@@ -649,8 +679,25 @@ foreach ($row in (Import-CsvRobust -Path $identityPermsPath)) {
     # "folders", not 1). File-level ACE rows remain fully present in the raw
     # IdentityPermissions.csv -- exactly what -IncludeFiles is for, catching
     # file-level exceptions to a folder's own permissions -- just not
-    # represented as their own nodes in this interactive map.
-    if ($row.ObjectType -eq 'File') { $fileRowsExcluded++; continue }
+    # represented as their own nodes in this interactive map. What they DO
+    # still contribute: a per-folder file count and a per-folder "at least
+    # one file here has broken inheritance" flag, aggregated below without
+    # ever adding the file itself as a node or edge.
+    if ($row.ObjectType -eq 'File') {
+        $fileRowsExcluded++
+        $hasFileCounts = $true
+        $normalizedFilePath = Get-NormalizedPath $row.Path
+        if ($seenFilePaths.Add($normalizedFilePath)) {
+            $lastSlash = $normalizedFilePath.LastIndexOf('\')
+            if ($lastSlash -gt 0) {
+                $parentPath = $normalizedFilePath.Substring(0, $lastSlash)
+                $parentIdx = Get-OrAdd-Folder -Path $parentPath
+                if ($folderFileCount.ContainsKey($parentIdx)) { $folderFileCount[$parentIdx]++ } else { $folderFileCount[$parentIdx] = 1 }
+                if (ConvertTo-Bool $row.InheritanceBrokenHere) { [void]$folderFilesBroken.Add($parentIdx) }
+            }
+        }
+        continue
+    }
 
     $identityIdx = Get-OrAdd-Identity -Sid $row.IdentitySid -Name $row.IdentityName -Type $row.IdentityType
     $folderIdx   = Get-OrAdd-Folder -Path (Get-NormalizedPath $row.Path) -Created $row.Created -Modified $row.Modified -Accessed $row.Accessed
@@ -746,6 +793,18 @@ for ($si = 0; $si -lt $shareOrder.Count; $si++) {
     })
 }
 
+for ($fi = 0; $fi -lt $folderIndex.Count; $fi++) {
+    # fileCount/filesBrokenInheritance only get set on folders a File row
+    # actually pointed at -- a folder with no key in $folderFileCount was
+    # never touched by one, so it stays completely absent from this folder's
+    # own JSON (not 0/false) when $hasFileCounts is true, same "absent, not a
+    # zero value" distinction $folderFileCount itself is built to preserve.
+    if ($folderFileCount.ContainsKey($fi)) {
+        $folderIndex[$fi].fileCount = $folderFileCount[$fi]
+        $folderIndex[$fi].filesBrokenInheritance = $folderFilesBroken.Contains($fi)
+    }
+}
+
 $manifestObject = [ordered]@{
     identities = $identityIndex
     folders    = $folderIndex
@@ -765,6 +824,7 @@ $manifestObject = [ordered]@{
     scanComplete = $scanComplete
     truncatedRowsDropped = $script:truncatedRowsDropped
     hasFileMetadata = $hasFileMetadata
+    hasFileCounts = $hasFileCounts
 }
 
 Write-Verbose "Writing $DataDirName\manifest.js ..."

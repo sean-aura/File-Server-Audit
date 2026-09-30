@@ -254,6 +254,7 @@
       <button id="btnBroken" class="chipBtn" title="Cycles: off -> show only -> hide -> off">Broken inheritance folders</button>
       <button id="btnDormant" class="chipBtn" title="Cycles: off -> show only -> hide -> off">Disabled / dormant identities</button>
       <button id="btnAged" class="chipBtn" style="display:none;" title="Cycles: off -> 1yr+ -> 5yr+ -> 10yr+ since last modified -> off">Aged folders</button>
+      <button id="btnFilesBroken" class="chipBtn" style="display:none;" title="Toggle: flag folders where a file has broken inheritance">Flag files w/ broken inheritance</button>
       <button id="themeToggleBtn" class="chipBtn themeToggleBtn" title="Toggle light/dark (follows your browser by default)"></button>
     </div>
   </header>
@@ -338,6 +339,7 @@ const DATA = {
   // that produced any given manifest are always the same version pair --
   // there's no supported scenario mixing an old manifest with this template.
   hasFileMetadata: !!ACCESS_MAP_MANIFEST.hasFileMetadata,
+  hasFileCounts: !!ACCESS_MAP_MANIFEST.hasFileCounts,
   // The bash/awk build path appends this as a separate, trailing statement
   // after manifest.js's own const declaration (see Build-AccessMapHtml.sh --
   // avoids build.awk needing systime(), a gawk-only extension not available
@@ -452,7 +454,8 @@ let state = {
   sortDir: 1,          // sidebar list sort direction: 1 = A-Z, -1 = Z-A
   filterIdentityKind: 0, // sidebar identities filter, tri-state: 0=all, 1=Users (non-Group), 2=Groups only
   sortGroupsFirst: false, // when true, all Groups sort before all non-Groups (each block still respects sortDir/search/filterIdentityKind)
-  filterAgedYears: 0      // sidebar folder list "aged" filter, cycles 0 (off) -> 1 -> 5 -> 10 (years since last modified) -> back to 0; only meaningful when DATA.hasFileMetadata is true
+  filterAgedYears: 0,     // sidebar folder list "aged" filter, cycles 0 (off) -> 1 -> 5 -> 10 (years since last modified) -> back to 0; only meaningful when DATA.hasFileMetadata is true
+  flagFilesBroken: false  // when true, shows a "files: broken" badge on folders with filesBrokenInheritance in both the sidebar list and the tree view; only meaningful when DATA.hasFileCounts is true
 };
 
 // Case-insensitive comparator for anything shown alphabetically (sidebar
@@ -803,7 +806,8 @@ function renderList() {
       const div = document.createElement('div');
       div.className = 'listItem';
       const badge = f.broken ? '<span class="badge broken">broken inheritance</span>' : '';
-      div.innerHTML = `<div class="listItemPathRow"><span class="path">${esc(f.path)}</span>${badge}</div>`;
+      const fileBadge = (state.flagFilesBroken && f.filesBrokenInheritance) ? '<span class="badge broken" title="One or more files directly in this folder have broken inheritance">files: broken inheritance</span>' : '';
+      div.innerHTML = `<div class="listItemPathRow"><span class="path">${esc(f.path)}</span>${badge}${fileBadge}</div>`;
       div.title = f.path;
       div.onclick = () => selectFolder(idx, true);
       panel.appendChild(div);
@@ -960,6 +964,13 @@ function renderFolderNode(nodeId, level, maxAutoExpandDepth, onSelectFolder, sel
       b.textContent = 'broken';
       b.title = 'Inheritance is broken here (explicit ACL, not inherited from parent)';
       row.appendChild(b);
+    }
+    if (state.flagFilesBroken && DATA.folders[nodeId].filesBrokenInheritance) {
+      const fb = document.createElement('span');
+      fb.className = 'badge broken';
+      fb.textContent = 'files: broken';
+      fb.title = 'One or more files directly in this folder have broken inheritance';
+      row.appendChild(fb);
     }
     row.onclick = () => onSelectFolder(nodeId);
   } else {
@@ -1806,6 +1817,25 @@ function folderInfoCard(f) {
       metaWrap.innerHTML = metaHtml;
       div.appendChild(metaWrap);
     }
+  }
+  // fileCount/filesBrokenInheritance are per-folder and only present at all
+  // when this folder actually had at least one File row under -IncludeFiles
+  // (see DATA.hasFileCounts and Get-OrAdd-Folder's own comment on why this
+  // is absence, not a 0/false value, for a folder that was never touched by
+  // one) -- shown here unconditionally, since this IS that folder's own
+  // page; the tree/list views gate the broken-files badge behind a toggle
+  // instead, since space there is much more constrained.
+  if (DATA.hasFileCounts && f.fileCount !== undefined) {
+    const fileMetaWrap = document.createElement('div');
+    fileMetaWrap.className = 'folderMetaRow';
+    fileMetaWrap.innerHTML = `<span class="field"><b>Files in this folder:</b> ${f.fileCount}</span>`;
+    if (f.filesBrokenInheritance) {
+      const fbadge = document.createElement('span');
+      fbadge.className = 'badge broken';
+      fbadge.textContent = 'File(s) with broken inheritance';
+      fileMetaWrap.appendChild(fbadge);
+    }
+    div.appendChild(fileMetaWrap);
   }
   return div;
 }
@@ -2809,6 +2839,25 @@ function init() {
       btn.textContent = state.filterAgedYears === 0 ? 'Aged folders' : `Aged folders (${state.filterAgedYears}yr+)`;
       btn.classList.toggle('state-show', state.filterAgedYears !== 0);
       if (state.filterAgedYears !== 0 && state.tab !== 'folders') setTab('folders'); else renderList();
+    };
+  }
+
+  // Flag-files-broken toggle only makes sense (and is only shown at all)
+  // when this scan actually aggregated per-folder file counts -- see
+  // DATA.hasFileCounts. The badge it controls appears in both the sidebar
+  // list (renderList) and the tree view (renderFolderTreeView, shared by
+  // both renderFolder and renderIdentity), so toggling it needs to
+  // re-render whichever of those is currently on screen, not just one.
+  if (DATA.hasFileCounts) {
+    document.getElementById('btnFilesBroken').style.display = '';
+    document.getElementById('btnFilesBroken').onclick = () => {
+      state.flagFilesBroken = !state.flagFilesBroken;
+      document.getElementById('btnFilesBroken').classList.toggle('state-show', state.flagFilesBroken);
+      renderList();
+      if (state.selected) {
+        if (state.selected.kind === 'folder') renderFolder(state.selected.idx);
+        else renderIdentity(state.selected.idx);
+      }
     };
   }
 

@@ -156,8 +156,33 @@ function get_or_add_identity(sid, name, type,    key, idx) {
     return idx
 }
 
+function parent_path(path,    i, c) {
+    # Manual backward scan rather than a regex/match() call -- keeps this
+    # portable to mawk as well as gawk, matching this script's own tested
+    # compatibility (see the header). Returns "" if path has no backslash
+    # (nothing to strip, e.g. an already-bare share root).
+    for (i = length(path); i >= 1; i--) {
+        c = substr(path, i, 1)
+        if (c == "\\") return substr(path, 1, i - 1)
+    }
+    return ""
+}
+
 function get_or_add_folder(path, created, modified, accessed,    idx, shareKey) {
-    if (path in folder_lookup) return folder_lookup[path]
+    if (path in folder_lookup) {
+        # A file row for this folder can be processed before the folder's own
+        # ACE row creates this entry (this function is also called, with no
+        # timestamps to offer, purely to resolve a file's parent folder for
+        # the file-count aggregation below) -- or the reverse. Either order
+        # is possible depending on scan/processing order, so fill in
+        # whichever of these three is still missing rather than assuming
+        # whichever call happens to run first is the authoritative one.
+        idx = folder_lookup[path]
+        if (created != "" && folder_created[idx] == "") folder_created[idx] = created
+        if (modified != "" && folder_modified[idx] == "") folder_modified[idx] = modified
+        if (accessed != "" && folder_accessed[idx] == "") folder_accessed[idx] = accessed
+        return idx
+    }
     idx = folder_count++
     folder_lookup[path] = idx
     folder_path[idx] = path
@@ -273,6 +298,7 @@ BEGIN {
     share_count = 0
     total_edges = 0
     file_rows_excluded = 0
+    has_file_counts = 0
     broken_folder_count = 0
     broad_folder_count = 0
     scanerr_count = 0
@@ -325,7 +351,21 @@ BEGIN {
 
     n = csv_split(line, f)
     objectType = f[colidx["ObjectType"]]
-    if (objectType == "File") { file_rows_excluded++; next }
+    if (objectType == "File") {
+        file_rows_excluded++
+        has_file_counts = 1
+        rawFilePath = normalize_path(f[colidx["Path"]])
+        if (!(rawFilePath in seen_file_path)) {
+            seen_file_path[rawFilePath] = 1
+            parentPath = parent_path(rawFilePath)
+            if (parentPath != "") {
+                parentIdx = get_or_add_folder(parentPath, "", "", "")
+                folder_file_count[parentIdx]++
+                if (f[colidx["InheritanceBrokenHere"]] == "True") folder_files_broken[parentIdx] = 1
+            }
+        }
+        next
+    }
 
     identityName = f[colidx["IdentityName"]]
     identitySid  = f[colidx["IdentitySid"]]
@@ -440,7 +480,18 @@ END {
     m = m "],\"folders\":["
     for (idx = 0; idx < folder_count; idx++) {
         if (idx > 0) m = m ","
-        m = m "{\"path\":" json_str(folder_path[idx]) ",\"broken\":" (folder_broken[idx] ? "true" : "false") ",\"share\":" json_str(folder_share[idx]) ",\"created\":" json_str(folder_created[idx]) ",\"modified\":" json_str(folder_modified[idx]) ",\"accessed\":" json_str(folder_accessed[idx]) "}"
+        m = m "{\"path\":" json_str(folder_path[idx]) ",\"broken\":" (folder_broken[idx] ? "true" : "false") ",\"share\":" json_str(folder_share[idx]) ",\"created\":" json_str(folder_created[idx]) ",\"modified\":" json_str(folder_modified[idx]) ",\"accessed\":" json_str(folder_accessed[idx])
+        # fileCount/filesBrokenInheritance only appear on a folder a File row
+        # actually pointed at -- a folder with no entry in folder_file_count
+        # was never touched by one, so these stay completely absent from its
+        # JSON (not 0/false) when has_file_counts is true, the same
+        # "absent, not a zero value" distinction folder_file_count itself is
+        # built to preserve. Mirrors Build-AccessMapHtml.ps1's own comment
+        # on this exact point.
+        if (idx in folder_file_count) {
+            m = m ",\"fileCount\":" folder_file_count[idx] ",\"filesBrokenInheritance\":" ((idx in folder_files_broken) ? "true" : "false")
+        }
+        m = m "}"
     }
     m = m "],\"shares\":["
     for (s = 0; s < share_count; s++) {
@@ -464,6 +515,7 @@ END {
     m = m "]"
     m = m ",\"scanComplete\":" (scancomplete == "true" ? "true" : "false")
     m = m ",\"hasFileMetadata\":" (has_file_metadata ? "true" : "false")
+    m = m ",\"hasFileCounts\":" (has_file_counts ? "true" : "false")
     # If the bash driver already dropped the file's last physical line
     # because it wasn't newline-terminated (truncdropped==1), an unterminated
     # quote still open at EOF here is very likely that SAME lost row (the
